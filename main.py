@@ -593,6 +593,7 @@ def run_basic_analysis(candidates):
                             "wk_parts_of_speech": ", ".join(wk_parts_of_speech),
                             "confidence": confidence,
                             "review_note": review_note,
+                            "used_in_display": f"{subject.characters} ({used_in_level}) {sentence.get('sentence_label', '')}",
                         }
                     )
 
