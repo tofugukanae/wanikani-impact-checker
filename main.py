@@ -600,9 +600,15 @@ def run_basic_analysis(candidates):
     finally:
         db.close()
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return HTMLResponse("ok")
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "error": None,
+        },
+    )
 
 
 def build_analysis_results_csv(results):
