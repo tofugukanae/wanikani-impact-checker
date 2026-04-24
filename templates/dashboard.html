@@ -1,238 +1,242 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>WaniKani Level Change Impact Checker</title>
-  </head>
-  <body>
-    <h1>WaniKani Level Change Impact Checker</h1>
 
-    <h2>Sync WaniKani Data</h2>
-    <form action="/sync-subjects" method="post">
-      <button type="submit">Refresh Data</button>
-    </form>
+<head>
+  <meta charset="UTF-8" />
+  <title>WaniKani Level Change Impact Checker</title>
+</head>
 
-    {% if sync_message %}
-      <p>{{ sync_message }}</p>
-    {% endif %}
+<body>
+  <h1>WaniKani Level Change Impact Checker</h1>
 
-    {% if sync_error %}
-      <p style="color: red;">{{ sync_error }}</p>
-    {% endif %}
+  <h2>Sync WaniKani Data</h2>
+  <form action="/sync-subjects" method="post">
+    <button type="submit">Refresh Data</button>
+  </form>
 
-    <h2>Upload level change CSV</h2>
-    <form action="/upload" method="post" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".csv" required />
-      <button type="submit">Upload</button>
-    </form>
+  {% if sync_message %}
+  <p>{{ sync_message }}</p>
+  {% endif %}
 
-    {% if uploaded_filename %}
-      <h3>Uploaded file</h3>
-      <p>{{ uploaded_filename }}</p>
+  {% if sync_error %}
+  <p style="color: red;">{{ sync_error }}</p>
+  {% endif %}
 
-      <h3>Basic analysis results</h3>
-      <p>Matches found: {{ analysis_results|length }}</p>
-      <p>Analysis candidates: {{ analysis_candidate_count }}</p>
+  <h2>Upload level change CSV</h2>
+  <form action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".csv" required />
+    <button type="submit">Upload</button>
+  </form>
 
-      {% if analysis_results %}
-        <form action="/export-results" method="post" style="margin-bottom: 8px;">
-          <button type="submit">Export results CSV</button>
-        </form>
+  {% if uploaded_filename %}
+  <h3>Uploaded file</h3>
+  <p>{{ uploaded_filename }}</p>
 
-        <div style="margin-bottom: 12px;">
-          <button type="button" onclick="copyResultsTableForNotion()">Copy for Notion</button>
-          <span id="copy-status" style="margin-left: 8px;"></span>
-        </div>
+  <h3>Basic analysis results</h3>
+  <p>Matches found: {{ analysis_results|length }}</p>
+  <p>Analysis candidates: {{ analysis_candidate_count }}</p>
 
-        <table id="results-table" border="1" cellpadding="6">
-          <thead>
-            <tr>
-              <th>Changed Item</th>
-              <th>Old Level</th>
-              <th>New Level</th>
-              <th>Used In</th>
-              <th>Used In Level</th>
-              <th>Result Type</th>
-              <th>Sentence #</th>
-              <th>Sentence (JP)</th>
-              <th>Sentence (EN)</th>
-              <th>Match Method</th>
-              <th>WK Parts of Speech</th>
-              <th>Confidence</th>
-              <th>Review Note</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for result in analysis_results %}
-              <tr>
-                <td>{{ result.changed_characters }}</td>
-                <td>{{ result.old_level }}</td>
-                <td>{{ result.new_level }}</td>
-                <td>{{ result.used_in_characters }}</td>
-                <td>{{ result.used_in_level }}</td>
-                <td>{{ result.result_type }}</td>
-                <td>{{ result.sentence_label }}</td>
-                <td>{{ (result.sentence_ja_highlighted or result.sentence_ja or "") | safe }}</td>
-                <td>{{ result.sentence_en }}</td>
-                <td>{{ result.match_method }}</td>
-                <td>{{ result.wk_parts_of_speech }}</td>
-                <td>{{ result.confidence }}</td>
-                <td>{{ result.review_note }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+  {% if analysis_results %}
+  <form action="/export-results" method="post" style="margin-bottom: 8px;">
+    <button type="submit">Export results CSV</button>
+  </form>
 
-        <table id="notion-copy-table" border="1" cellpadding="6" style="position:absolute; left:-9999px; top:-9999px; border-collapse: collapse;">
-            <thead>
-              <tr>
-                <th>Changed Item</th>
-                <th>Old Level</th>
-                <th>New Level</th>
-                <th>Used In</th>
-                <th>Used In Level</th>
-                <th>Result Type</th>
-                <th>Sentence (JP)</th>
-                <th>Sentence (EN)</th>
-                <th>Match Method</th>
-                <th>WK Parts of Speech</th>
-                <th>Confidence</th>
-                <th>Review Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for result in analysis_results %}
-                <tr>
-                  <td>{{ result.changed_characters }}</td>
-                  <td>{{ result.old_level }}</td>
-                  <td>{{ result.new_level }}</td>
-                  <td>{{ result.used_in_characters }}</td>
-                  <td>{{ result.used_in_level }}</td>
-                  <td>{{ result.result_type }}</td>
-                  <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
-                  <td>{{ result.sentence_en }}</td>
-                  <td>{{ result.match_method }}</td>
-                  <td>{{ result.wk_parts_of_speech }}</td>
-                  <td>{{ result.confidence }}</td>
-                  <td>{{ result.review_note }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-      {% endif %}
+  <div style="margin-bottom: 12px;">
+    <button type="button" onclick="copyResultsTableForNotion()">Copy for Notion</button>
+    <span id="copy-status" style="margin-left: 8px;"></span>
+  </div>
 
-      <details style="margin-top: 16px;">
-        <summary><strong>Show validation details</strong></summary>
+  <table id="results-table" border="1" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Changed Item</th>
+        <th>Old Level</th>
+        <th>New Level</th>
+        <th>Used In</th>
+        <th>Used In Level</th>
+        <th>Result Type</th>
+        <th>Sentence #</th>
+        <th>Sentence (JP)</th>
+        <th>Sentence (EN)</th>
+        <th>Match Method</th>
+        <th>WK Parts of Speech</th>
+        <th>Confidence</th>
+        <th>Review Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in analysis_results %}
+      <tr>
+        <td>{{ result.changed_characters }}</td>
+        <td>{{ result.old_level }}</td>
+        <td>{{ result.new_level }}</td>
+        <td>{{ result.used_in_characters }}</td>
+        <td>{{ result.used_in_level }}</td>
+        <td>{{ result.result_type }}</td>
+        <td>{{ result.sentence_label }}</td>
+        <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
+        <td>{{ result.sentence_en }}</td>
+        <td>{{ result.match_method }}</td>
+        <td>{{ result.wk_parts_of_speech }}</td>
+        <td>{{ result.confidence }}</td>
+        <td>{{ result.review_note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 
-        <h3>Validation summary</h3>
-        <p>Blocking errors: {{ blocking_error_count }}</p>
+  <table id="notion-copy-table" border="1" cellpadding="6"
+    style="position:absolute; left:-9999px; top:-9999px; border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th>Changed Item</th>
+        <th>Old Level</th>
+        <th>New Level</th>
+        <th>Used In</th>
+        <th>Used In Level</th>
+        <th>Result Type</th>
+        <th>Sentence (JP)</th>
+        <th>Sentence (EN)</th>
+        <th>Match Method</th>
+        <th>WK Parts of Speech</th>
+        <th>Confidence</th>
+        <th>Review Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in analysis_results %}
+      <tr>
+        <td>{{ result.changed_characters }}</td>
+        <td>{{ result.old_level }}</td>
+        <td>{{ result.new_level }}</td>
+        <td>{{ result.used_in_characters }}</td>
+        <td>{{ result.used_in_level }}</td>
+        <td>{{ result.result_type }}</td>
+        <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
+        <td>{{ result.sentence_en }}</td>
+        <td>{{ result.match_method }}</td>
+        <td>{{ result.wk_parts_of_speech }}</td>
+        <td>{{ result.confidence }}</td>
+        <td>{{ result.review_note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
 
-        <h3>Preview (first 5 lines)</h3>
-        <pre>
+  <details style="margin-top: 16px;">
+    <summary><strong>Show validation details</strong></summary>
+
+    <h3>Validation summary</h3>
+    <p>Blocking errors: {{ blocking_error_count }}</p>
+
+    <h3>Preview (first 5 lines)</h3>
+    <pre>
 {% for line in preview_lines %}
 {{ line }}
 {% endfor %}
         </pre>
 
-        {% if missing_headers %}
-          <p style="color: red;">Missing required headers:</p>
-          <ul>
-            {% for header in missing_headers %}
-              <li>{{ header }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
-
-        {% if validated_rows %}
-          <h3>Validated rows</h3>
-          <table border="1" cellpadding="6">
-            <thead>
-              <tr>
-                <th>Line</th>
-                <th>Characters</th>
-                <th>Subject Type</th>
-                <th>Current Level</th>
-                <th>New Level</th>
-                <th>Resolved Subject ID</th>
-                <th>DB Level</th>
-                <th>Status</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in validated_rows %}
-                <tr>
-                  <td>{{ row.line_number }}</td>
-                  <td>{{ row.characters }}</td>
-                  <td>{{ row.subject_type }}</td>
-                  <td>{{ row.current_level }}</td>
-                  <td>{{ row.new_level }}</td>
-                  <td>{{ row.resolved_subject_id }}</td>
-                  <td>{{ row.db_level }}</td>
-                  <td>{{ row.status }}</td>
-                  <td>{{ row.message }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% endif %}
-      </details>
+    {% if missing_headers %}
+    <p style="color: red;">Missing required headers:</p>
+    <ul>
+      {% for header in missing_headers %}
+      <li>{{ header }}</li>
+      {% endfor %}
+    </ul>
     {% endif %}
 
-    <hr />
+    {% if validated_rows %}
+    <h3>Validated rows</h3>
+    <table border="1" cellpadding="6">
+      <thead>
+        <tr>
+          <th>Line</th>
+          <th>Characters</th>
+          <th>Subject Type</th>
+          <th>Current Level</th>
+          <th>New Level</th>
+          <th>Resolved Subject ID</th>
+          <th>DB Level</th>
+          <th>Status</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in validated_rows %}
+        <tr>
+          <td>{{ row.line_number }}</td>
+          <td>{{ row.characters }}</td>
+          <td>{{ row.subject_type }}</td>
+          <td>{{ row.current_level }}</td>
+          <td>{{ row.new_level }}</td>
+          <td>{{ row.resolved_subject_id }}</td>
+          <td>{{ row.db_level }}</td>
+          <td>{{ row.status }}</td>
+          <td>{{ row.message }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </details>
+  {% endif %}
 
-    <form action="/logout" method="post">
-      <button type="submit">Log out</button>
-    </form>
-    <script>
-      async function copyResultsTableForNotion() {
-        const table = document.getElementById("notion-copy-table");
-        const status = document.getElementById("copy-status");
+  <hr />
 
-        if (!table || !status) {
-          return;
-        }
+  <form action="/logout" method="post">
+    <button type="submit">Log out</button>
+  </form>
+  <script>
+    async function copyResultsTableForNotion() {
+      const table = document.getElementById("notion-copy-table");
+      const status = document.getElementById("copy-status");
 
-        const html = table.outerHTML;
-        const text = tableToTsv(table);
-
-        try {
-          const item = new ClipboardItem({
-            "text/html": new Blob([html], { type: "text/html" }),
-            "text/plain": new Blob([text], { type: "text/plain" }),
-          });
-
-          await navigator.clipboard.write([item]);
-          status.textContent = "Copied for Notion";
-          return;
-        } catch (err) {
-        }
-
-        try {
-          await navigator.clipboard.writeText(text);
-          status.textContent = "Copied as plain text";
-        } catch (fallbackErr) {
-          status.textContent = "Copy failed";
-        }
+      if (!table || !status) {
+        return;
       }
 
-      function tableToTsv(table) {
-        const rows = Array.from(table.querySelectorAll("tr"));
+      const html = table.outerHTML;
+      const text = tableToTsv(table);
 
-        return rows
-          .map((row) => {
-            const cells = Array.from(row.querySelectorAll("th, td"));
-            return cells
-              .map((cell) => {
-                return (cell.innerText || "")
-                  .replace(/\t/g, " ")
-                  .replace(/\n/g, " ")
-                  .trim();
-              })
-              .join("\t");
-          })
-          .join("\n");
+      try {
+        const item = new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        });
+
+        await navigator.clipboard.write([item]);
+        status.textContent = "Copied for Notion";
+        return;
+      } catch (err) {
       }
-    </script>
-  </body>
+
+      try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = "Copied as plain text";
+      } catch (fallbackErr) {
+        status.textContent = "Copy failed";
+      }
+    }
+
+    function tableToTsv(table) {
+      const rows = Array.from(table.querySelectorAll("tr"));
+
+      return rows
+        .map((row) => {
+          const cells = Array.from(row.querySelectorAll("th, td"));
+          return cells
+            .map((cell) => {
+              return (cell.innerText || "")
+                .replace(/\t/g, " ")
+                .replace(/\n/g, " ")
+                .trim();
+            })
+            .join("\t");
+        })
+        .join("\n");
+    }
+  </script>
+</body>
+
 </html>
