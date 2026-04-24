@@ -7,3 +7,4 @@ requests
 sqlalchemy
 sudachipy
 sudachidict_core
+itsdangerous
