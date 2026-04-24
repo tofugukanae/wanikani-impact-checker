@@ -609,7 +609,9 @@ def run_basic_analysis(candidates):
                             "review_note": review_note,
                         }
                     )
-
+        print("DEBUG results type:", type(results))
+        if results:
+            print("DEBUG first item type:", type(results[0]))
         return results
     finally:
         db.close()
