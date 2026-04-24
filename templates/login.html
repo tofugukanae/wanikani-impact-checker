@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Login</title>
+  </head>
+  <body>
+    <h1>WaniKani Content Impact Checker</h1>
+    <p>Please enter the shared password.</p>
+
+    {% if error %}
+      <p style="color: red;">{{ error }}</p>
+    {% endif %}
+
+    <form action="/login" method="post">
+      <label for="password">Password</label><br />
+      <input id="password" name="password" type="password" required />
+      <button type="submit">Log in</button>
+    </form>
+  </body>
+</html>

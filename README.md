@@ -1,0 +1,1 @@
+# wanikani-impact-checker
