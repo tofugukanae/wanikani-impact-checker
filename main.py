@@ -518,16 +518,17 @@ def run_basic_analysis(candidates):
                 context_sentences = extract_context_sentences(subject)
 
                 for sentence in context_sentences:
-                    sentence_ja = sentence["ja"]
+                    sentence_ja_raw = sentence.get("ja") or ""
+                    sentence_en_raw = sentence.get("en") or ""
 
                     if not changed_characters:
                         continue
 
                     match_method = None
 
-                    if changed_characters in sentence_ja:
+                    if changed_characters in sentence_ja_raw:
                         if sentence_has_longer_competing_match(
-                            sentence_ja,
+                            sentence_ja_raw,
                             changed_characters,
                             vocabulary_subjects,
                         ):
@@ -535,7 +536,7 @@ def run_basic_analysis(candidates):
                         match_method = "exact_substring_longest"
                     else:
                         match_method = sentence_matches_candidate_with_sudachi(
-                            sentence_ja,
+                            sentence_ja_raw,
                             changed_characters,
                         )
 
@@ -560,21 +561,6 @@ def run_basic_analysis(candidates):
 
                     if sentence.get("is_wildcard", False):
                         review_note = f"{review_note} Wildcard sentence; graded reader restriction does not apply."
-
-                    sentence_ja_highlighted = highlight_sentence_ja(
-                        sentence["ja"],
-                        changed_characters,
-                        match_method,
-                    )
-
-                    sentence_ja_for_notion = build_notion_highlighted_sentence(
-                        sentence["ja"],
-                        changed_characters,
-                        match_method,
-                    )
-
-                    sentence_ja_raw = sentence.get("ja") or ""
-                    sentence_en_raw = sentence.get("en") or ""
 
                     sentence_ja_highlighted = highlight_sentence_ja(
                         sentence_ja_raw,
@@ -609,7 +595,7 @@ def run_basic_analysis(candidates):
                             "review_note": review_note,
                         }
                     )
-    try:
+
         return results
     finally:
         db.close()
