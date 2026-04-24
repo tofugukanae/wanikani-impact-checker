@@ -610,7 +610,6 @@ async def login_page(request: Request):
         },
     )
 
-
 def build_analysis_results_csv(results):
     output = StringIO()
     writer = csv.writer(output)

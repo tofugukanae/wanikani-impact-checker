@@ -8,3 +8,4 @@ sqlalchemy
 sudachipy
 sudachidict_core
 itsdangerous
+starlette<1.0.0

@@ -3,6 +3,7 @@
 app.db
 exports/
 .DS_Store
+*.bak
 
 # --- Python ---
 __pycache__/
