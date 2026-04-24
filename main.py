@@ -609,12 +609,14 @@ def run_basic_analysis(candidates):
                             "review_note": review_note,
                         }
                     )
-        print("DEBUG results type:", type(results))
-        if results:
-            print("DEBUG first item type:", type(results[0]))
+    try:
         return results
     finally:
         db.close()
+
+@app.get("/")
+async def login_page(request: Request):
+    return HTMLResponse("ok")
 
 
 def build_analysis_results_csv(results):
