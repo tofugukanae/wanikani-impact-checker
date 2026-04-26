@@ -578,6 +578,7 @@ def run_basic_analysis(candidates):
                         {
                             "changed_subject_id": changed_subject_id,
                             "changed_characters": changed_characters,
+                            "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
                             "old_level": old_level,
                             "new_level": new_level,
                             "used_in_subject_id": subject.subject_id,
