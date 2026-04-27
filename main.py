@@ -59,7 +59,7 @@ latest_movement_candidates = []
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
-SUPPORTED_SUBJECT_TYPES = {"vocabulary"}
+SUPPORTED_SUBJECT_TYPES = {"vocabulary", "kanji"}
 
 HEADER_ALIASES = {
     "characters": ["characters", "Subjects", "subjects"],
@@ -224,13 +224,31 @@ def validate_csv_text(text: str):
         db.close()
 
 
-def get_analysis_candidates(validated_rows):
+def get_context_candidates(validated_rows):
     candidates = []
 
     for row in validated_rows:
         if (
             row["status"] == "ok"
             and row["subject_type"] == "vocabulary"
+            and row["resolved_subject_id"]
+        ):
+            candidates.append(row)
+
+    return candidates
+
+
+def get_collocation_candidates(validated_rows):
+    return get_context_candidates(validated_rows)
+
+
+def get_support_candidates(validated_rows):
+    candidates = []
+
+    for row in validated_rows:
+        if (
+            row["status"] == "ok"
+            and row["subject_type"] in {"vocabulary", "kanji"}
             and row["resolved_subject_id"]
         ):
             candidates.append(row)
@@ -277,6 +295,48 @@ def extract_parts_of_speech(subject: Subject):
 
     data = payload.get("data", {})
     return data.get("parts_of_speech", []) or []
+
+
+SUPPORT_CONTENT_FIELDS = [
+    ("meaning_mnemonic", "Meaning Mnemonic"),
+    ("reading_mnemonic", "Reading Mnemonic"),
+    ("meaning_hint", "Meaning Hint"),
+    ("reading_hint", "Reading Hint"),
+]
+
+
+def extract_support_content(subject: Subject):
+    try:
+        payload = json.loads(subject.data_json)
+    except Exception:
+        return []
+
+    data = payload.get("data", {})
+    content = []
+
+    for field_name, label in SUPPORT_CONTENT_FIELDS:
+        text = (data.get(field_name) or "").strip()
+
+        if text:
+            content.append(
+                {
+                    "field_name": field_name,
+                    "label": label,
+                    "text": text,
+                }
+            )
+
+    return content
+
+
+def get_support_confidence(subject_type):
+    if subject_type == "vocabulary":
+        return "high"
+
+    if subject_type == "kanji":
+        return "medium"
+
+    return "medium"
 
 
 def is_verb_like(parts_of_speech):
@@ -602,6 +662,71 @@ def run_basic_analysis(candidates):
         return results
     finally:
         db.close()
+
+
+def run_support_content_analysis(candidates):
+    db = SessionLocal()
+    results = []
+    review_note = (
+        "Changed item is referenced in this support content and may now be "
+        "above the used-in item level."
+    )
+
+    try:
+        subjects = db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
+
+        for candidate in candidates:
+            changed_subject_id = candidate["resolved_subject_id"]
+            changed_characters = candidate["characters"]
+            old_level = int(candidate["current_level"])
+            new_level = int(candidate["new_level"])
+            changed_subject_type = candidate["subject_type"]
+
+            if not changed_characters:
+                continue
+
+            for subject in subjects:
+                if subject.subject_id == changed_subject_id:
+                    continue
+
+                used_in_level = subject.level
+                result_type = None
+
+                if old_level <= used_in_level and new_level > used_in_level:
+                    result_type = "newly_broken"
+                elif old_level > used_in_level and new_level > used_in_level:
+                    result_type = "already_broken"
+
+                if not result_type:
+                    continue
+
+                for content in extract_support_content(subject):
+                    if changed_characters not in content["text"]:
+                        continue
+
+                    results.append(
+                        {
+                            "changed_subject_id": changed_subject_id,
+                            "changed_characters": changed_characters,
+                            "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
+                            "old_level": old_level,
+                            "new_level": new_level,
+                            "used_in_subject_id": subject.subject_id,
+                            "used_in_characters": subject.characters,
+                            "used_in_level": used_in_level,
+                            "used_in_display": f"{subject.characters} ({used_in_level})",
+                            "content_type": content["label"],
+                            "matched_text": content["text"],
+                            "result_type": result_type,
+                            "confidence": get_support_confidence(changed_subject_type),
+                            "review_note": review_note,
+                        }
+                    )
+
+        return results
+    finally:
+        db.close()
+
 
 @app.get("/", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -993,7 +1118,7 @@ def fetch_all_subjects():
         raise ValueError("WANIKANI_API_TOKEN is missing.")
 
     all_subjects = []
-    next_url = WANIKANI_SUBJECTS_URL + "?types=vocabulary"
+    next_url = WANIKANI_SUBJECTS_URL + "?types=vocabulary,kanji"
 
     while next_url:
         response = requests.get(next_url, headers=get_wanikani_headers(), timeout=30)
@@ -1101,6 +1226,8 @@ async def dashboard(request: Request):
             "analysis_candidate_count": 0,
             "analysis_results": [],
             "analysis_results_tsv": "",
+            "support_candidate_count": 0,
+            "support_results": [],
             "sync_message": None,
             "sync_error": None,
             "movement_candidate_count": len(latest_movement_candidates),
@@ -1156,9 +1283,12 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     text = raw_bytes.decode("utf-8", errors="replace")
 
     validation = validate_csv_text(text)
-    analysis_candidates = get_analysis_candidates(validation["rows"])
-    latest_movement_candidates = analysis_candidates
+    analysis_candidates = get_context_candidates(validation["rows"])
+    collocation_candidates = get_collocation_candidates(validation["rows"])
+    support_candidates = get_support_candidates(validation["rows"])
+    latest_movement_candidates = collocation_candidates
     analysis_results = run_basic_analysis(analysis_candidates)
+    support_results = run_support_content_analysis(support_candidates)
 
     safe_name = file.filename.rsplit(".", 1)[0]
     export_filename = f"{safe_name}-analysis-results.csv"
@@ -1182,6 +1312,8 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
             "analysis_candidate_count": len(analysis_candidates),
             "analysis_results": analysis_results,
             "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
+            "support_candidate_count": len(support_candidates),
+            "support_results": support_results,
             "sync_message": None,
             "sync_error": None,
             "movement_candidate_count": len(latest_movement_candidates),
@@ -1198,7 +1330,7 @@ async def sync_subjects(request: Request):
         subjects = fetch_all_subjects()
         saved_count = save_subjects_to_db(subjects)
         sync_message = (
-            f"Fetched {len(subjects)} vocabulary subjects from WaniKani API "
+            f"Fetched {len(subjects)} vocabulary and kanji subjects from WaniKani API "
             f"and saved {saved_count} rows to SQLite."
         )
         sync_error = None
@@ -1219,6 +1351,8 @@ async def sync_subjects(request: Request):
             "analysis_candidate_count": 0,
             "analysis_results": [],
             "analysis_results_tsv": "",
+            "support_candidate_count": 0,
+            "support_results": [],
             "sync_message": sync_message,
             "sync_error": sync_error,
         },
