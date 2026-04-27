@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>New Content Level Checker</title>
+</head>
+
+<body>
+  <h1>New Content Level Checker</h1>
+  <nav style="margin-bottom: 16px;">
+    <a href="/dashboard">Level Movement Checker</a>
+    |
+    <a href="/content-checker">New Content Checker</a>
+  </nav>
+
+  <form action="/content-checker/analyze" method="post">
+    <textarea name="input_text" rows="8" cols="100" required>{{ input_text }}</textarea>
+    <div style="margin-top: 8px;">
+      <button type="submit">Analyze</button>
+    </div>
+  </form>
+
+  {% if result %}
+  <h2>Results</h2>
+  <div style="margin-bottom: 12px;">
+    <button type="button" onclick="copyContentCheckerCellForNotion()">Copy for Notion Cell</button>
+    <span id="content-copy-status" style="margin-left: 8px;"></span>
+  </div>
+
+  <table id="content-results-table" border="1" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Detected Items</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="white-space: pre-line;">{{ result.detected_items }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <textarea id="content-notion-copy-text" style="position:absolute; left:-9999px; top:-9999px;">{{ result.detected_items }}</textarea>
+  {% endif %}
+
+  <script>
+    async function copyContentCheckerCellForNotion() {
+      const textarea = document.getElementById("content-notion-copy-text");
+      const status = document.getElementById("content-copy-status");
+
+      if (!textarea || !status) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(textarea.value);
+        status.textContent = "Copied for Notion cell";
+      } catch (err) {
+        status.textContent = "Copy failed";
+      }
+    }
+  </script>
+</body>
+
+</html>
