@@ -130,12 +130,13 @@ def validate_csv_text(text: str):
 
             subject_type = normalize_subject_type(subject_type_raw)
 
+            row_type = "movement" if current_level_raw else "addition"
             current_level = None
             new_level = None
             resolved_subject_id = None
             db_level = None
 
-            if not characters or not subject_type or not current_level_raw or not new_level_raw:
+            if not characters or not subject_type or not new_level_raw:
                 status = "missing_field"
                 message = "One or more required fields are empty."
             elif subject_type not in ALLOWED_SUBJECT_TYPES:
@@ -143,10 +144,14 @@ def validate_csv_text(text: str):
                 message = "subject_type must be vocabulary, kanji, or radical."
             else:
                 try:
-                    current_level = int(current_level_raw)
                     new_level = int(new_level_raw)
 
-                    if not (1 <= current_level <= 60 and 1 <= new_level <= 60):
+                    if row_type == "movement":
+                        current_level = int(current_level_raw)
+
+                    if not (1 <= new_level <= 60) or (
+                        row_type == "movement" and not (1 <= current_level <= 60)
+                    ):
                         status = "invalid_level"
                         message = "Levels must be between 1 and 60."
                 except ValueError:
@@ -166,7 +171,7 @@ def validate_csv_text(text: str):
                 status = "unsupported_type"
                 message = "This subject type is not supported in v1 analysis."
 
-            if status == "ok":
+            if status == "ok" and row_type == "movement":
                 subject = (
                     db.query(Subject)
                     .filter(Subject.characters == characters, Subject.subject_type == subject_type)
@@ -184,7 +189,18 @@ def validate_csv_text(text: str):
                         status = "current_level_mismatch"
                         message = f"CSV current_level is {current_level}, but WaniKani data says {db_level}."
 
-            if status == "ok":
+            if status == "ok" and row_type == "addition":
+                subject = (
+                    db.query(Subject)
+                    .filter(Subject.characters == characters, Subject.subject_type == subject_type)
+                    .first()
+                )
+
+                if subject:
+                    resolved_subject_id = subject.subject_id
+                    db_level = subject.level
+
+            if status == "ok" and row_type == "movement":
                 if current_level == new_level:
                     status = "unchanged_level"
                     message = "current_level and new_level are the same."
@@ -205,6 +221,7 @@ def validate_csv_text(text: str):
             rows.append(
                 {
                     "line_number": index,
+                    "row_type": row_type,
                     "characters": characters,
                     "subject_type": subject_type,
                     "current_level": current_level_raw,
@@ -232,8 +249,15 @@ def get_context_candidates(validated_rows):
     for row in validated_rows:
         if (
             row["status"] == "ok"
+            and row.get("row_type", "movement") == "movement"
             and row["subject_type"] == "vocabulary"
             and row["resolved_subject_id"]
+        ):
+            candidates.append(row)
+        elif (
+            row["status"] == "ok"
+            and row.get("row_type") == "addition"
+            and row["subject_type"] in {"vocabulary", "kanji"}
         ):
             candidates.append(row)
 
@@ -241,7 +265,24 @@ def get_context_candidates(validated_rows):
 
 
 def get_collocation_candidates(validated_rows):
-    return get_context_candidates(validated_rows)
+    candidates = []
+
+    for row in validated_rows:
+        if (
+            row["status"] == "ok"
+            and row.get("row_type", "movement") == "movement"
+            and row["subject_type"] == "vocabulary"
+            and row["resolved_subject_id"]
+        ):
+            candidates.append(row)
+        elif (
+            row["status"] == "ok"
+            and row.get("row_type") == "addition"
+            and row["subject_type"] in {"vocabulary", "kanji"}
+        ):
+            candidates.append(row)
+
+    return candidates
 
 
 def get_support_candidates(validated_rows):
@@ -250,8 +291,15 @@ def get_support_candidates(validated_rows):
     for row in validated_rows:
         if (
             row["status"] == "ok"
+            and row.get("row_type", "movement") == "movement"
             and row["subject_type"] in {"vocabulary", "kanji"}
             and row["resolved_subject_id"]
+        ):
+            candidates.append(row)
+        elif (
+            row["status"] == "ok"
+            and row.get("row_type") == "addition"
+            and row["subject_type"] in {"vocabulary", "kanji"}
         ):
             candidates.append(row)
 
@@ -298,6 +346,37 @@ def get_result_type_with_final_levels(
         return "already_broken", used_in_final_level
 
     return None, used_in_final_level
+
+
+def get_candidate_result_type(candidate, used_in_subject_id, used_in_current_level, movement_level_map):
+    changed_final_level = int(candidate["new_level"])
+    used_in_final_level = movement_level_map.get(
+        int(used_in_subject_id),
+        int(used_in_current_level),
+    )
+
+    if changed_final_level <= used_in_final_level:
+        return None, used_in_final_level
+
+    if candidate.get("row_type") == "addition":
+        return "new_item_used_below_level", used_in_final_level
+
+    old_level = int(candidate["current_level"])
+
+    if old_level <= used_in_final_level:
+        return "newly_broken", used_in_final_level
+
+    if old_level > used_in_final_level:
+        return "already_broken", used_in_final_level
+
+    return None, used_in_final_level
+
+
+def get_candidate_display_levels(candidate):
+    if candidate.get("row_type") == "addition":
+        return "", int(candidate["new_level"])
+
+    return int(candidate["current_level"]), int(candidate["new_level"])
 
 
 def sort_candidates_by_match_priority(candidates):
@@ -599,7 +678,7 @@ def get_confidence_and_note(match_method, changed_characters, wk_parts_of_speech
             return "high", "Surface token match on verb-like item."
         return "medium", "Surface token match; verify semantic fit."
 
-    if match_method == "exact_substring_longest":
+    if match_method in {"exact_substring_longest", "exact_substring"}:
         if len(changed_characters or "") <= 1:
             return "low", "Very short substring match; manual review recommended."
         return "medium", "Substring match; review context."
@@ -656,11 +735,32 @@ def sentence_matches_candidate_with_sudachi(sentence_ja: str, changed_characters
     return None
 
 
+def text_matches_candidate(text: str, changed_characters: str, subject_type: str, vocabulary_subjects):
+    if not changed_characters:
+        return None
+
+    if subject_type == "kanji":
+        if changed_characters in text:
+            return "exact_substring"
+        return None
+
+    if changed_characters in text:
+        if sentence_has_longer_competing_match(
+            text,
+            changed_characters,
+            vocabulary_subjects,
+        ):
+            return None
+        return "exact_substring_longest"
+
+    return sentence_matches_candidate_with_sudachi(text, changed_characters)
+
+
 def highlight_sentence_ja(sentence_ja: str, changed_characters: str, match_method: str):
     if not sentence_ja or not changed_characters:
         return sentence_ja
 
-    if match_method == "exact_substring_longest":
+    if match_method in {"exact_substring_longest", "exact_substring"}:
         return sentence_ja.replace(
             changed_characters,
             f'<span style="color: red; font-weight: bold;">{changed_characters}</span>',
@@ -723,7 +823,7 @@ def build_notion_highlighted_sentence(sentence_ja: str, changed_characters: str,
     if not sentence_ja or not changed_characters:
         return sentence_ja
 
-    if match_method == "exact_substring_longest":
+    if match_method in {"exact_substring_longest", "exact_substring"}:
         return sentence_ja.replace(
             changed_characters,
             f"【{changed_characters}】",
@@ -789,20 +889,22 @@ def run_basic_analysis(candidates, movement_level_map):
         vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
 
         for candidate in sort_candidates_by_match_priority(candidates):
-            changed_subject_id = candidate["resolved_subject_id"]
+            changed_subject_id = candidate.get("resolved_subject_id")
             changed_characters = candidate["characters"]
-            old_level = int(candidate["current_level"])
-            new_level = int(candidate["new_level"])
+            old_level, new_level = get_candidate_display_levels(candidate)
+            row_type = candidate.get("row_type", "movement")
 
-            changed_subject = (
-                db.query(Subject)
-                .filter(Subject.subject_id == changed_subject_id)
-                .first()
-            )
+            changed_subject = None
+            if changed_subject_id:
+                changed_subject = (
+                    db.query(Subject)
+                    .filter(Subject.subject_id == changed_subject_id)
+                    .first()
+                )
             wk_parts_of_speech = extract_parts_of_speech(changed_subject) if changed_subject else []
 
             for subject in vocabulary_subjects:
-                if subject.subject_id == changed_subject_id:
+                if changed_subject_id and subject.subject_id == changed_subject_id:
                     continue
 
                 used_in_level = subject.level
@@ -815,28 +917,18 @@ def run_basic_analysis(candidates, movement_level_map):
                     if not changed_characters:
                         continue
 
-                    match_method = None
-
-                    if changed_characters in sentence_ja_raw:
-                        if sentence_has_longer_competing_match(
-                            sentence_ja_raw,
-                            changed_characters,
-                            vocabulary_subjects,
-                        ):
-                            continue
-                        match_method = "exact_substring_longest"
-                    else:
-                        match_method = sentence_matches_candidate_with_sudachi(
-                            sentence_ja_raw,
-                            changed_characters,
-                        )
+                    match_method = text_matches_candidate(
+                        sentence_ja_raw,
+                        changed_characters,
+                        candidate["subject_type"],
+                        vocabulary_subjects,
+                    )
 
                     if not match_method:
                         continue
 
-                    result_type, used_in_final_level = get_result_type_with_final_levels(
-                        old_level,
-                        new_level,
+                    result_type, used_in_final_level = get_candidate_result_type(
+                        candidate,
                         subject.subject_id,
                         used_in_level,
                         movement_level_map,
@@ -882,7 +974,11 @@ def run_basic_analysis(candidates, movement_level_map):
                         {
                             "changed_subject_id": changed_subject_id,
                             "changed_characters": changed_characters,
-                            "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
+                            "changed_item_display": (
+                                f"{changed_characters} (new → {new_level})"
+                                if row_type == "addition"
+                                else f"{changed_characters} ({old_level} → {new_level})"
+                            ),
                             "old_level": old_level,
                             "new_level": new_level,
                             "used_in_subject_id": subject.subject_id,
@@ -921,23 +1017,22 @@ def run_support_content_analysis(candidates, movement_level_map):
         subjects = db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
 
         for candidate in sort_candidates_by_match_priority(candidates):
-            changed_subject_id = candidate["resolved_subject_id"]
+            changed_subject_id = candidate.get("resolved_subject_id")
             changed_characters = candidate["characters"]
-            old_level = int(candidate["current_level"])
-            new_level = int(candidate["new_level"])
+            old_level, new_level = get_candidate_display_levels(candidate)
             changed_subject_type = candidate["subject_type"]
+            row_type = candidate.get("row_type", "movement")
 
             if not changed_characters:
                 continue
 
             for subject in subjects:
-                if subject.subject_id == changed_subject_id:
+                if changed_subject_id and subject.subject_id == changed_subject_id:
                     continue
 
                 used_in_level = subject.level
-                result_type, used_in_final_level = get_result_type_with_final_levels(
-                    old_level,
-                    new_level,
+                result_type, used_in_final_level = get_candidate_result_type(
+                    candidate,
                     subject.subject_id,
                     used_in_level,
                     movement_level_map,
@@ -966,7 +1061,11 @@ def run_support_content_analysis(candidates, movement_level_map):
                         {
                             "changed_subject_id": changed_subject_id,
                             "changed_characters": changed_characters,
-                            "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
+                            "changed_item_display": (
+                                f"{changed_characters} (new → {new_level})"
+                                if row_type == "addition"
+                                else f"{changed_characters} ({old_level} → {new_level})"
+                            ),
                             "old_level": old_level,
                             "new_level": new_level,
                             "used_in_subject_id": subject.subject_id,
@@ -1286,20 +1385,23 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
             token_dictionary_forms = {token.dictionary_form() for token in tokens}
 
             for candidate in prioritized_candidates:
-                old_level = int(candidate["current_level"])
-                new_level = int(candidate["new_level"])
-                candidate_subject = (
-                    db.query(Subject)
-                    .filter(Subject.subject_id == candidate["resolved_subject_id"])
-                    .first()
-                )
+                old_level, new_level = get_candidate_display_levels(candidate)
+                row_type = candidate.get("row_type", "movement")
+                candidate_subject = None
+                changed_subject_id = candidate.get("resolved_subject_id")
 
-                if not candidate_subject or candidate_subject.subject_id == used_in_subject_id:
+                if changed_subject_id:
+                    candidate_subject = (
+                        db.query(Subject)
+                        .filter(Subject.subject_id == changed_subject_id)
+                        .first()
+                    )
+
+                if changed_subject_id and changed_subject_id == used_in_subject_id:
                     continue
 
-                result_type, used_in_final_level = get_result_type_with_final_levels(
-                    old_level,
-                    new_level,
+                result_type, used_in_final_level = get_candidate_result_type(
+                    candidate,
                     used_in_subject_id,
                     used_in_level,
                     movement_level_map,
@@ -1308,18 +1410,30 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
                 if not result_type:
                     continue
 
-                match_method = collocation_matches_subject(
-                    collocation_ja,
-                    candidate_subject,
-                    vocabulary_subjects,
-                    token_surfaces,
-                    token_dictionary_forms,
-                )
+                if candidate_subject and candidate["subject_type"] == "vocabulary":
+                    match_method = collocation_matches_subject(
+                        collocation_ja,
+                        candidate_subject,
+                        vocabulary_subjects,
+                        token_surfaces,
+                        token_dictionary_forms,
+                    )
+                else:
+                    match_method = text_matches_candidate(
+                        collocation_ja,
+                        candidate["characters"],
+                        candidate["subject_type"],
+                        vocabulary_subjects,
+                    )
 
                 if not match_method:
                     continue
 
-                changed_characters = candidate_subject.characters or ""
+                changed_characters = (
+                    candidate_subject.characters
+                    if candidate_subject and candidate_subject.characters
+                    else candidate["characters"]
+                )
                 match_key = (
                     "collocation",
                     row["collocation_id"] or row["line_number"],
@@ -1332,7 +1446,7 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
 
                 remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
 
-                wk_parts_of_speech = extract_parts_of_speech(candidate_subject)
+                wk_parts_of_speech = extract_parts_of_speech(candidate_subject) if candidate_subject else []
                 confidence, review_note = get_confidence_and_note(
                     match_method,
                     changed_characters,
@@ -1352,9 +1466,13 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
 
                 results.append(
                     {
-                        "changed_subject_id": candidate_subject.subject_id,
+                        "changed_subject_id": changed_subject_id,
                         "changed_characters": changed_characters,
-                        "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
+                        "changed_item_display": (
+                            f"{changed_characters} (new → {new_level})"
+                            if row_type == "addition"
+                            else f"{changed_characters} ({old_level} → {new_level})"
+                        ),
                         "old_level": old_level,
                         "new_level": new_level,
                         "used_in_subject_id": used_in_subject_id,
