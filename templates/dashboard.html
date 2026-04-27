@@ -9,6 +9,117 @@
 <body>
   <h1>WaniKani Level Change Impact Checker</h1>
 
+  <h2>Upload Collocations CSV</h2>
+  <p>Active movement-plan items: {{ movement_candidate_count or 0 }}</p>
+  <form action="/upload-collocations-ui" method="post" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".csv" required />
+    <button type="submit">Analyze Collocations</button>
+  </form>
+
+  {% if collocations_uploaded_filename %}
+  <h3>Collocation analysis results</h3>
+  <p>{{ collocations_uploaded_filename }}</p>
+  <p>Flagged collocations: {{ collocation_result_count }}</p>
+  <p>Validation errors: {{ collocations_blocking_error_count }}</p>
+
+  {% if collocation_error %}
+  <p style="color: red;">{{ collocation_error }}</p>
+  {% endif %}
+
+  {% if collocation_results %}
+  <div style="margin-bottom: 12px;">
+    <button type="button" onclick="copyTableForNotion('collocation-results-table', 'collocation-copy-status')">Copy collocation results</button>
+    <span id="collocation-copy-status" style="margin-left: 8px;"></span>
+  </div>
+
+  <table id="collocation-results-table" border="1" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Above-Level Item</th>
+        <th>Used In</th>
+        <th>Result Type</th>
+        <th>Pattern</th>
+        <th>Collocation (JP)</th>
+        <th>Collocation (EN)</th>
+        <th>Match Method</th>
+        <th>WK Parts of Speech</th>
+        <th>Confidence</th>
+        <th>Review Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in collocation_results %}
+      <tr>
+        <td>{{ result.changed_item_display }}</td>
+        <td>{{ result.used_in_display }}</td>
+        <td>{{ result.result_type }}</td>
+        <td>{{ result.pattern_of_use }}</td>
+        <td>{{ result.sentence_ja_highlighted|safe }}</td>
+        <td>{{ result.sentence_en }}</td>
+        <td>{{ result.match_method }}</td>
+        <td>{{ result.wk_parts_of_speech }}</td>
+        <td>{{ result.confidence }}</td>
+        <td>{{ result.review_note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if collocations_blocking_error_count %}
+  <details style="margin-top: 16px;">
+    <summary><strong>Show collocation validation details</strong></summary>
+
+    {% if collocations_missing_headers %}
+    <p style="color: red;">Missing required headers:</p>
+    <ul>
+      {% for header in collocations_missing_headers %}
+      <li>{{ header }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if collocations_validated_rows %}
+    <h3>Validated collocation rows</h3>
+  <table border="1" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Line</th>
+        <th>Collocation ID</th>
+        <th>Subject ID</th>
+        <th>Used In Item</th>
+        <th>Subject</th>
+        <th>Subject Level</th>
+        <th>Pattern</th>
+        <th>Japanese</th>
+        <th>English</th>
+        <th>Status</th>
+        <th>Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in collocations_validated_rows %}
+      <tr>
+        <td>{{ row.line_number }}</td>
+        <td>{{ row.collocation_id }}</td>
+        <td>{{ row.subject_id_raw }}</td>
+        <td>{{ row.used_in_item }}</td>
+        <td>{{ row.subject_characters }}</td>
+        <td>{{ row.subject_level }}</td>
+        <td>{{ row.pattern_of_use }}</td>
+        <td>{{ row.japanese }}</td>
+        <td>{{ row.english }}</td>
+        <td>{{ row.status }}</td>
+        <td>{{ row.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+    {% endif %}
+  </details>
+  {% endif %}
+  {% endif %}
+
   <h2>Sync WaniKani Data</h2>
   <form action="/sync-subjects" method="post">
     <button type="submit">Refresh Data</button>
@@ -177,6 +288,37 @@
     async function copyResultsTableForNotion() {
       const table = document.getElementById("notion-copy-table");
       const status = document.getElementById("copy-status");
+
+      if (!table || !status) {
+        return;
+      }
+
+      const html = table.outerHTML;
+      const text = tableToTsv(table);
+
+      try {
+        const item = new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        });
+
+        await navigator.clipboard.write([item]);
+        status.textContent = "Copied for Notion";
+        return;
+      } catch (err) {
+      }
+
+      try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = "Copied as plain text";
+      } catch (fallbackErr) {
+        status.textContent = "Copy failed";
+      }
+    }
+
+    async function copyTableForNotion(tableId, statusId) {
+      const table = document.getElementById(tableId);
+      const status = document.getElementById(statusId);
 
       if (!table || !status) {
         return;
