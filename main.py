@@ -55,6 +55,7 @@ APP_PASSWORD = getenv("APP_PASSWORD", "")
 WANIKANI_API_TOKEN = getenv("WANIKANI_API_TOKEN", "")
 WANIKANI_API_REVISION = getenv("WANIKANI_API_REVISION", "20170710")
 WANIKANI_SUBJECTS_URL = "https://api.wanikani.com/v2/subjects"
+latest_movement_candidates = []
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
@@ -690,6 +691,296 @@ def build_analysis_results_tsv(results):
 
     return output.getvalue()
 
+
+def pick_row_value(row, *fieldnames):
+    for fieldname in fieldnames:
+        value = row.get(fieldname)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+
+    return ""
+
+
+def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_raw):
+    subject_id = None
+
+    if subject_id_raw:
+        try:
+            subject_id = int(subject_id_raw)
+        except ValueError:
+            return None, None, "invalid_subject_id", "subject_id must be an integer."
+
+        subject = db.query(Subject).filter(Subject.subject_id == subject_id).first()
+
+        if not subject:
+            return subject_id, None, "not_found", "No matching subject was found in the local WaniKani data."
+
+        return subject_id, subject, "ok", ""
+
+    if not used_in_item:
+        return None, None, "missing_field", "Either subject_id or used_in_item is required."
+
+    query = db.query(Subject).filter(
+        Subject.characters == used_in_item,
+        Subject.subject_type == "vocabulary",
+    )
+
+    if used_in_level_raw:
+        try:
+            used_in_level = int(used_in_level_raw)
+        except ValueError:
+            return None, None, "invalid_level", "used_in_level must be an integer."
+
+        query = query.filter(Subject.level == used_in_level)
+
+    subject = query.first()
+
+    if not subject:
+        return None, None, "not_found", "No matching used_in_item was found in the local WaniKani data."
+
+    return subject.subject_id, subject, "ok", ""
+
+
+def resolve_changed_subject(db, changed_item):
+    if not changed_item:
+        return None
+
+    return (
+        db.query(Subject)
+        .filter(Subject.characters == changed_item, Subject.subject_type == "vocabulary")
+        .first()
+    )
+
+
+def parse_level(raw_value):
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_collocations_csv_text(text: str):
+    reader = csv.DictReader(StringIO(text))
+    headers = reader.fieldnames or []
+    has_subject_ref = "subject_id" in headers
+    has_japanese = "japanese" in headers
+    has_english = "english" in headers
+    missing_headers = []
+
+    if not has_subject_ref:
+        missing_headers.append("subject_id")
+
+    if not has_japanese:
+        missing_headers.append("japanese")
+
+    if not has_english:
+        missing_headers.append("english")
+
+    rows = []
+    blocking_error_count = 0
+    db = SessionLocal()
+
+    if missing_headers:
+        return {
+            "headers": headers,
+            "missing_headers": missing_headers,
+            "rows": [],
+            "blocking_error_count": 1,
+        }
+
+    try:
+        for index, row in enumerate(reader, start=2):
+            status = "ok"
+            message = ""
+            subject_id_raw = pick_row_value(row, "subject_id")
+            japanese = pick_row_value(row, "japanese")
+            english = pick_row_value(row, "english")
+            pattern_of_use = pick_row_value(row, "pattern_of_use")
+            collocation_id = pick_row_value(row, "id")
+            subject_id = None
+            subject_level = None
+            subject_characters = ""
+
+            if not subject_id_raw or not japanese:
+                status = "missing_field"
+                message = "subject_id and japanese are required."
+            else:
+                subject_id, subject, status, message = resolve_collocation_subject(
+                    db,
+                    subject_id_raw,
+                    "",
+                    "",
+                )
+
+            if status == "ok":
+                subject_level = subject.level
+                subject_characters = subject.characters or ""
+
+            if status in {"missing_field", "invalid_subject_id", "invalid_level", "not_found"}:
+                blocking_error_count += 1
+
+            rows.append(
+                {
+                    "line_number": index,
+                    "collocation_id": collocation_id,
+                    "subject_id": subject_id,
+                    "subject_id_raw": subject_id_raw,
+                    "used_in_item": subject_characters,
+                    "used_in_level_raw": subject_level,
+                    "changed_item": "",
+                    "changed_subject_id": None,
+                    "old_level": "",
+                    "new_level": "",
+                    "subject_characters": subject_characters,
+                    "subject_level": subject_level,
+                    "pattern_of_use": pattern_of_use,
+                    "japanese": japanese,
+                    "english": english,
+                    "status": status,
+                    "message": message,
+                }
+            )
+
+        return {
+            "headers": headers,
+            "missing_headers": [],
+            "rows": rows,
+            "blocking_error_count": blocking_error_count,
+        }
+    finally:
+        db.close()
+
+
+def collocation_matches_subject(
+    collocation_ja: str,
+    subject: Subject,
+    vocabulary_subjects,
+    token_surfaces,
+    token_dictionary_forms,
+):
+    characters = subject.characters or ""
+
+    if not characters:
+        return None
+
+    if characters in collocation_ja:
+        if sentence_has_longer_competing_match(
+            collocation_ja,
+            characters,
+            vocabulary_subjects,
+        ):
+            return None
+        return "exact_substring_longest"
+
+    if characters in token_surfaces:
+        return "sudachi_surface"
+
+    if characters in token_dictionary_forms:
+        return "sudachi_dictionary_form"
+
+    return None
+
+
+def run_collocation_analysis(validated_rows, movement_candidates):
+    db = SessionLocal()
+    results = []
+
+    try:
+        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+
+        for row in validated_rows:
+            if row["status"] != "ok" or row["subject_level"] is None:
+                continue
+
+            used_in_subject_id = row["subject_id"]
+            used_in_level = int(row["subject_level"])
+            collocation_ja = row["japanese"]
+            tokens = tokenize_japanese(collocation_ja)
+            token_surfaces = {token.surface() for token in tokens}
+            token_dictionary_forms = {token.dictionary_form() for token in tokens}
+
+            for candidate in movement_candidates:
+                old_level = int(candidate["current_level"])
+                new_level = int(candidate["new_level"])
+                candidate_subject = (
+                    db.query(Subject)
+                    .filter(Subject.subject_id == candidate["resolved_subject_id"])
+                    .first()
+                )
+
+                if not candidate_subject or candidate_subject.subject_id == used_in_subject_id:
+                    continue
+
+                result_type = None
+
+                if old_level <= used_in_level and new_level > used_in_level:
+                    result_type = "newly_broken"
+                elif old_level > used_in_level and new_level > used_in_level:
+                    result_type = "already_broken"
+
+                if not result_type:
+                    continue
+
+                match_method = collocation_matches_subject(
+                    collocation_ja,
+                    candidate_subject,
+                    vocabulary_subjects,
+                    token_surfaces,
+                    token_dictionary_forms,
+                )
+
+                if not match_method:
+                    continue
+
+                changed_characters = candidate_subject.characters or ""
+                wk_parts_of_speech = extract_parts_of_speech(candidate_subject)
+                confidence, review_note = get_confidence_and_note(
+                    match_method,
+                    changed_characters,
+                    wk_parts_of_speech,
+                )
+
+                highlighted_ja = highlight_sentence_ja(
+                    collocation_ja,
+                    changed_characters,
+                    match_method,
+                )
+                notion_ja = build_notion_highlighted_sentence(
+                    collocation_ja,
+                    changed_characters,
+                    match_method,
+                )
+
+                results.append(
+                    {
+                        "changed_subject_id": candidate_subject.subject_id,
+                        "changed_characters": changed_characters,
+                        "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
+                        "old_level": old_level,
+                        "new_level": new_level,
+                        "used_in_subject_id": used_in_subject_id,
+                        "used_in_characters": row["subject_characters"],
+                        "used_in_level": used_in_level,
+                        "sentence_label": row["pattern_of_use"],
+                        "sentence_ja": collocation_ja,
+                        "sentence_ja_highlighted": highlighted_ja or collocation_ja,
+                        "sentence_ja_for_notion": notion_ja or collocation_ja,
+                        "sentence_en": row["english"],
+                        "match_method": match_method,
+                        "result_type": result_type,
+                        "wk_parts_of_speech": ", ".join(wk_parts_of_speech),
+                        "confidence": confidence,
+                        "review_note": review_note,
+                        "used_in_display": f"{row['subject_characters']} ({used_in_level}) {row['pattern_of_use']}",
+                        "collocation_id": row["collocation_id"],
+                        "pattern_of_use": row["pattern_of_use"],
+                    }
+                )
+
+        return results
+    finally:
+        db.close()
+
 def get_wanikani_headers():
     return {
         "Authorization": f"Bearer {WANIKANI_API_TOKEN}",
@@ -812,12 +1103,52 @@ async def dashboard(request: Request):
             "analysis_results_tsv": "",
             "sync_message": None,
             "sync_error": None,
+            "movement_candidate_count": len(latest_movement_candidates),
+        },
+    )
+
+
+# UI handler for collocation CSV upload
+@app.post("/upload-collocations-ui", response_class=HTMLResponse)
+async def upload_collocations_ui(request: Request, file: UploadFile = File(...)):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    content = await file.read()
+    text = content.decode("utf-8-sig", errors="replace")
+    validation = validate_collocations_csv_text(text)
+    collocation_error = None
+    collocation_results = []
+
+    if not latest_movement_candidates:
+        collocation_error = "Upload a level change CSV first, then upload the collocations CSV."
+    else:
+        collocation_results = run_collocation_analysis(
+            validation["rows"],
+            latest_movement_candidates,
+        )
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "collocations_uploaded_filename": file.filename,
+            "collocations_headers": validation["headers"],
+            "collocations_missing_headers": validation["missing_headers"],
+            "collocations_validated_rows": validation["rows"],
+            "collocations_blocking_error_count": validation["blocking_error_count"],
+            "collocation_error": collocation_error,
+            "collocation_results": collocation_results,
+            "collocation_result_count": len(collocation_results),
+            "movement_candidate_count": len(latest_movement_candidates),
         },
     )
 
 
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_csv(request: Request, file: UploadFile = File(...)):
+    global latest_movement_candidates
+
     if not is_logged_in(request):
         return RedirectResponse(url="/", status_code=303)
 
@@ -826,6 +1157,7 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
 
     validation = validate_csv_text(text)
     analysis_candidates = get_analysis_candidates(validation["rows"])
+    latest_movement_candidates = analysis_candidates
     analysis_results = run_basic_analysis(analysis_candidates)
 
     safe_name = file.filename.rsplit(".", 1)[0]
@@ -852,6 +1184,7 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
             "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
             "sync_message": None,
             "sync_error": None,
+            "movement_candidate_count": len(latest_movement_candidates),
         },
     )
 
