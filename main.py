@@ -1,6 +1,7 @@
 from os import getenv
 from pathlib import Path
 import csv
+import html
 import json
 import time
 from io import StringIO
@@ -398,6 +399,173 @@ def get_support_confidence(subject_type):
         return "medium"
 
     return "medium"
+
+
+def is_kanji_character(character):
+    codepoint = ord(character)
+    return (
+        0x3400 <= codepoint <= 0x4DBF
+        or 0x4E00 <= codepoint <= 0x9FFF
+        or 0xF900 <= codepoint <= 0xFAFF
+    )
+
+
+def find_all_spans(text, needle):
+    spans = []
+    start = 0
+
+    while needle:
+        index = text.find(needle, start)
+
+        if index == -1:
+            break
+
+        spans.append((index, index + len(needle)))
+        start = index + 1
+
+    return spans
+
+
+def spans_overlap(first, second):
+    return first[0] < second[1] and second[0] < first[1]
+
+
+def detect_content_vocabulary(text, vocabulary_subjects):
+    detected = {}
+    occupied_spans = []
+
+    sorted_subjects = sorted(
+        [subject for subject in vocabulary_subjects if subject.characters],
+        key=lambda subject: len(subject.characters or ""),
+        reverse=True,
+    )
+
+    for subject in sorted_subjects:
+        for span in find_all_spans(text, subject.characters):
+            if any(spans_overlap(span, occupied) for occupied in occupied_spans):
+                continue
+
+            detected[subject.subject_id] = subject
+            occupied_spans.append(span)
+            break
+
+    token_forms = set()
+
+    for token in tokenize_japanese(text):
+        surface = token.surface()
+        dictionary_form = token.dictionary_form()
+
+        if surface:
+            token_forms.add(surface)
+
+        if dictionary_form:
+            token_forms.add(dictionary_form)
+
+    for subject in vocabulary_subjects:
+        if subject.subject_id in detected or not subject.characters:
+            continue
+
+        if subject.characters in token_forms:
+            detected[subject.subject_id] = subject
+
+    return list(detected.values()), occupied_spans
+
+
+def detect_content_kanji(text, kanji_subjects, vocabulary_spans):
+    kanji_by_character = {
+        subject.characters: subject
+        for subject in kanji_subjects
+        if subject.characters
+    }
+    detected = {}
+
+    for index, character in enumerate(text):
+        if not is_kanji_character(character):
+            continue
+
+        character_span = (index, index + 1)
+
+        if any(spans_overlap(character_span, vocabulary_span) for vocabulary_span in vocabulary_spans):
+            continue
+
+        subject = kanji_by_character.get(character)
+
+        if subject:
+            detected[subject.subject_id] = subject
+
+    return list(detected.values())
+
+
+def format_detected_items(input_text, vocabulary_subjects, kanji_subjects):
+    vocab_items = sorted(vocabulary_subjects, key=lambda subject: (subject.level, subject.characters or ""))
+    kanji_items = sorted(kanji_subjects, key=lambda subject: (subject.level, subject.characters or ""))
+
+    if not vocab_items and not kanji_items:
+        detected_items_text = "No items detected"
+
+        return {
+            "input_text": input_text,
+            "input_text_html": html.escape(input_text).replace("\n", "<br>"),
+            "detected_items": detected_items_text,
+            "detected_items_html": html.escape(detected_items_text).replace("\n", "<br>"),
+            "vocabulary_items": vocab_items,
+            "kanji_items": kanji_items,
+        }
+
+    lines = ["Vocab"]
+
+    if vocab_items:
+        for subject in vocab_items:
+            lines.append(f"{subject.characters} ({subject.level})")
+    else:
+        lines.append("None")
+
+    if kanji_items:
+        lines.extend(["", "Kanji"])
+
+        for subject in kanji_items:
+            lines.append(f"{subject.characters} ({subject.level})")
+
+    detected_items_text = "\n".join(lines)
+
+    return {
+        "input_text": input_text,
+        "input_text_html": html.escape(input_text).replace("\n", "<br>"),
+        "detected_items": detected_items_text,
+        "detected_items_html": html.escape(detected_items_text).replace("\n", "<br>"),
+        "vocabulary_items": vocab_items,
+        "kanji_items": kanji_items,
+    }
+
+
+def analyze_new_content_text(text):
+    stripped_text = text.strip()
+
+    if not stripped_text:
+        return None
+
+    db = SessionLocal()
+
+    try:
+        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        kanji_subjects = db.query(Subject).filter(Subject.subject_type == "kanji").all()
+        detected_vocabulary, vocabulary_spans = detect_content_vocabulary(
+            stripped_text,
+            vocabulary_subjects,
+        )
+        detected_kanji = detect_content_kanji(
+            stripped_text,
+            kanji_subjects,
+            vocabulary_spans,
+        )
+
+        return format_detected_items(
+            stripped_text,
+            detected_vocabulary,
+            detected_kanji,
+        )
+    finally:
+        db.close()
 
 
 def is_verb_like(parts_of_speech):
@@ -1338,6 +1506,38 @@ async def dashboard(request: Request):
             "sync_message": None,
             "sync_error": None,
             "movement_candidate_count": len(latest_movement_candidates),
+        },
+    )
+
+
+@app.get("/content-checker", response_class=HTMLResponse)
+async def content_checker(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    return templates.TemplateResponse(
+        "content_checker.html",
+        {
+            "request": request,
+            "input_text": "",
+            "result": None,
+        },
+    )
+
+
+@app.post("/content-checker/analyze", response_class=HTMLResponse)
+async def analyze_content_checker(request: Request, input_text: str = Form("")):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    result = analyze_new_content_text(input_text)
+
+    return templates.TemplateResponse(
+        "content_checker.html",
+        {
+            "request": request,
+            "input_text": input_text,
+            "result": result,
         },
     )
 
