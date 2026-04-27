@@ -56,6 +56,7 @@ WANIKANI_API_TOKEN = getenv("WANIKANI_API_TOKEN", "")
 WANIKANI_API_REVISION = getenv("WANIKANI_API_REVISION", "20170710")
 WANIKANI_SUBJECTS_URL = "https://api.wanikani.com/v2/subjects"
 latest_movement_candidates = []
+latest_movement_level_map = {}
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
@@ -254,6 +255,48 @@ def get_support_candidates(validated_rows):
             candidates.append(row)
 
     return candidates
+
+
+def build_movement_level_map(candidates):
+    movement_levels = {}
+
+    for candidate in candidates:
+        subject_id = candidate.get("resolved_subject_id")
+        new_level_raw = candidate.get("new_level")
+
+        if not subject_id or not new_level_raw:
+            continue
+
+        try:
+            movement_levels[int(subject_id)] = int(new_level_raw)
+        except (TypeError, ValueError):
+            continue
+
+    return movement_levels
+
+
+def get_result_type_with_final_levels(
+    old_level,
+    changed_final_level,
+    used_in_subject_id,
+    used_in_current_level,
+    movement_level_map,
+):
+    used_in_final_level = movement_level_map.get(
+        int(used_in_subject_id),
+        int(used_in_current_level),
+    )
+
+    if changed_final_level <= used_in_final_level:
+        return None, used_in_final_level
+
+    if old_level <= used_in_final_level:
+        return "newly_broken", used_in_final_level
+
+    if old_level > used_in_final_level:
+        return "already_broken", used_in_final_level
+
+    return None, used_in_final_level
 
 
 def extract_context_sentences(subject: Subject):
@@ -551,7 +594,7 @@ def build_notion_highlighted_sentence(sentence_ja: str, changed_characters: str,
 
     return "".join(parts)
 
-def run_basic_analysis(candidates):
+def run_basic_analysis(candidates, movement_level_map):
     db = SessionLocal()
     results = []
 
@@ -604,12 +647,13 @@ def run_basic_analysis(candidates):
                     if not match_method:
                         continue
 
-                    result_type = None
-
-                    if old_level <= used_in_level and new_level > used_in_level:
-                        result_type = "newly_broken"
-                    elif old_level > used_in_level and new_level > used_in_level:
-                        result_type = "already_broken"
+                    result_type, used_in_final_level = get_result_type_with_final_levels(
+                        old_level,
+                        new_level,
+                        subject.subject_id,
+                        used_in_level,
+                        movement_level_map,
+                    )
 
                     if not result_type:
                         continue
@@ -645,6 +689,7 @@ def run_basic_analysis(candidates):
                             "used_in_subject_id": subject.subject_id,
                             "used_in_characters": subject.characters,
                             "used_in_level": used_in_level,
+                            "used_in_final_level": used_in_final_level,
                             "sentence_label": sentence.get("sentence_label", ""),
                             "sentence_ja": sentence_ja_raw,
                             "sentence_ja_highlighted": sentence_ja_highlighted or sentence_ja_raw,
@@ -664,7 +709,7 @@ def run_basic_analysis(candidates):
         db.close()
 
 
-def run_support_content_analysis(candidates):
+def run_support_content_analysis(candidates, movement_level_map):
     db = SessionLocal()
     results = []
     review_note = (
@@ -690,12 +735,13 @@ def run_support_content_analysis(candidates):
                     continue
 
                 used_in_level = subject.level
-                result_type = None
-
-                if old_level <= used_in_level and new_level > used_in_level:
-                    result_type = "newly_broken"
-                elif old_level > used_in_level and new_level > used_in_level:
-                    result_type = "already_broken"
+                result_type, used_in_final_level = get_result_type_with_final_levels(
+                    old_level,
+                    new_level,
+                    subject.subject_id,
+                    used_in_level,
+                    movement_level_map,
+                )
 
                 if not result_type:
                     continue
@@ -714,6 +760,7 @@ def run_support_content_analysis(candidates):
                             "used_in_subject_id": subject.subject_id,
                             "used_in_characters": subject.characters,
                             "used_in_level": used_in_level,
+                            "used_in_final_level": used_in_final_level,
                             "used_in_display": f"{subject.characters} ({used_in_level})",
                             "content_type": content["label"],
                             "matched_text": content["text"],
@@ -1006,7 +1053,7 @@ def collocation_matches_subject(
     return None
 
 
-def run_collocation_analysis(validated_rows, movement_candidates):
+def run_collocation_analysis(validated_rows, movement_candidates, movement_level_map):
     db = SessionLocal()
     results = []
 
@@ -1036,12 +1083,13 @@ def run_collocation_analysis(validated_rows, movement_candidates):
                 if not candidate_subject or candidate_subject.subject_id == used_in_subject_id:
                     continue
 
-                result_type = None
-
-                if old_level <= used_in_level and new_level > used_in_level:
-                    result_type = "newly_broken"
-                elif old_level > used_in_level and new_level > used_in_level:
-                    result_type = "already_broken"
+                result_type, used_in_final_level = get_result_type_with_final_levels(
+                    old_level,
+                    new_level,
+                    used_in_subject_id,
+                    used_in_level,
+                    movement_level_map,
+                )
 
                 if not result_type:
                     continue
@@ -1086,6 +1134,7 @@ def run_collocation_analysis(validated_rows, movement_candidates):
                         "used_in_subject_id": used_in_subject_id,
                         "used_in_characters": row["subject_characters"],
                         "used_in_level": used_in_level,
+                        "used_in_final_level": used_in_final_level,
                         "sentence_label": row["pattern_of_use"],
                         "sentence_ja": collocation_ja,
                         "sentence_ja_highlighted": highlighted_ja or collocation_ja,
@@ -1253,6 +1302,7 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
         collocation_results = run_collocation_analysis(
             validation["rows"],
             latest_movement_candidates,
+            latest_movement_level_map,
         )
 
     return templates.TemplateResponse(
@@ -1275,6 +1325,7 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_csv(request: Request, file: UploadFile = File(...)):
     global latest_movement_candidates
+    global latest_movement_level_map
 
     if not is_logged_in(request):
         return RedirectResponse(url="/", status_code=303)
@@ -1286,9 +1337,12 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     analysis_candidates = get_context_candidates(validation["rows"])
     collocation_candidates = get_collocation_candidates(validation["rows"])
     support_candidates = get_support_candidates(validation["rows"])
+    movement_candidates = get_support_candidates(validation["rows"])
+    movement_level_map = build_movement_level_map(movement_candidates)
     latest_movement_candidates = collocation_candidates
-    analysis_results = run_basic_analysis(analysis_candidates)
-    support_results = run_support_content_analysis(support_candidates)
+    latest_movement_level_map = movement_level_map
+    analysis_results = run_basic_analysis(analysis_candidates, movement_level_map)
+    support_results = run_support_content_analysis(support_candidates, movement_level_map)
 
     safe_name = file.filename.rsplit(".", 1)[0]
     export_filename = f"{safe_name}-analysis-results.csv"
