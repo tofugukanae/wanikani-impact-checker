@@ -62,6 +62,7 @@ latest_movement_level_map = {}
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
 SUPPORTED_SUBJECT_TYPES = {"vocabulary", "kanji"}
+ANALYZABLE_STATUSES = {"ok", "ok_moved_down"}
 
 HEADER_ALIASES = {
     "characters": ["characters", "Subjects", "subjects"],
@@ -205,8 +206,8 @@ def validate_csv_text(text: str):
                     status = "unchanged_level"
                     message = "current_level and new_level are the same."
                 elif new_level < current_level:
-                    status = "moved_down_no_risk"
-                    message = "This item moved down, so it is not a v1 analysis target."
+                    status = "ok_moved_down"
+                    message = "This item moved down and will still be analyzed for already-broken usage."
 
             if status in {
                 "missing_field",
@@ -248,14 +249,14 @@ def get_context_candidates(validated_rows):
 
     for row in validated_rows:
         if (
-            row["status"] == "ok"
+            row["status"] in ANALYZABLE_STATUSES
             and row.get("row_type", "movement") == "movement"
             and row["subject_type"] == "vocabulary"
             and row["resolved_subject_id"]
         ):
             candidates.append(row)
         elif (
-            row["status"] == "ok"
+            row["status"] in ANALYZABLE_STATUSES
             and row.get("row_type") == "addition"
             and row["subject_type"] in {"vocabulary", "kanji"}
         ):
@@ -269,14 +270,14 @@ def get_collocation_candidates(validated_rows):
 
     for row in validated_rows:
         if (
-            row["status"] == "ok"
+            row["status"] in ANALYZABLE_STATUSES
             and row.get("row_type", "movement") == "movement"
             and row["subject_type"] == "vocabulary"
             and row["resolved_subject_id"]
         ):
             candidates.append(row)
         elif (
-            row["status"] == "ok"
+            row["status"] in ANALYZABLE_STATUSES
             and row.get("row_type") == "addition"
             and row["subject_type"] in {"vocabulary", "kanji"}
         ):
@@ -290,14 +291,14 @@ def get_support_candidates(validated_rows):
 
     for row in validated_rows:
         if (
-            row["status"] == "ok"
+            row["status"] in ANALYZABLE_STATUSES
             and row.get("row_type", "movement") == "movement"
             and row["subject_type"] in {"vocabulary", "kanji"}
             and row["resolved_subject_id"]
         ):
             candidates.append(row)
         elif (
-            row["status"] == "ok"
+            row["status"] in ANALYZABLE_STATUSES
             and row.get("row_type") == "addition"
             and row["subject_type"] in {"vocabulary", "kanji"}
         ):
@@ -363,6 +364,12 @@ def get_candidate_result_type(candidate, used_in_subject_id, used_in_current_lev
 
     old_level = int(candidate["current_level"])
 
+    if changed_final_level < old_level:
+        if old_level > used_in_final_level and changed_final_level > used_in_final_level:
+            return "already_broken", used_in_final_level
+
+        return None, used_in_final_level
+
     if old_level <= used_in_final_level:
         return "newly_broken", used_in_final_level
 
@@ -395,6 +402,26 @@ def should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
 def remember_vocabulary_match(candidate, match_key, vocabulary_match_keys):
     if candidate.get("subject_type") == "vocabulary":
         vocabulary_match_keys.add(match_key)
+
+
+def sort_results_for_display(results):
+    result_type_priority = {
+        "newly_broken": 0,
+        "new_item_used_below_level": 1,
+        "already_broken": 2,
+    }
+
+    return sorted(
+        results,
+        key=lambda result: (
+            result_type_priority.get(result.get("result_type"), 99),
+            result.get("changed_characters") or "",
+            result.get("used_in_level") or 0,
+            result.get("used_in_characters") or "",
+            result.get("sentence_label") or "",
+            result.get("content_type") or "",
+        ),
+    )
 
 
 def extract_context_sentences(subject: Subject):
@@ -1675,10 +1702,12 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
     if not latest_movement_candidates:
         collocation_error = "Upload a level change CSV first, then upload the collocations CSV."
     else:
-        collocation_results = run_collocation_analysis(
-            validation["rows"],
-            latest_movement_candidates,
-            latest_movement_level_map,
+        collocation_results = sort_results_for_display(
+            run_collocation_analysis(
+                validation["rows"],
+                latest_movement_candidates,
+                latest_movement_level_map,
+            )
         )
 
     return templates.TemplateResponse(
@@ -1717,8 +1746,12 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     movement_level_map = build_movement_level_map(movement_candidates)
     latest_movement_candidates = collocation_candidates
     latest_movement_level_map = movement_level_map
-    analysis_results = run_basic_analysis(analysis_candidates, movement_level_map)
-    support_results = run_support_content_analysis(support_candidates, movement_level_map)
+    analysis_results = sort_results_for_display(
+        run_basic_analysis(analysis_candidates, movement_level_map)
+    )
+    support_results = sort_results_for_display(
+        run_support_content_analysis(support_candidates, movement_level_map)
+    )
 
     safe_name = file.filename.rsplit(".", 1)[0]
     export_filename = f"{safe_name}-analysis-results.csv"
