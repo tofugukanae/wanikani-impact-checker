@@ -299,6 +299,24 @@ def get_result_type_with_final_levels(
     return None, used_in_final_level
 
 
+def sort_candidates_by_match_priority(candidates):
+    priority = {
+        "vocabulary": 0,
+        "kanji": 1,
+    }
+
+    return sorted(candidates, key=lambda candidate: priority.get(candidate.get("subject_type"), 2))
+
+
+def should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+    return candidate.get("subject_type") == "kanji" and match_key in vocabulary_match_keys
+
+
+def remember_vocabulary_match(candidate, match_key, vocabulary_match_keys):
+    if candidate.get("subject_type") == "vocabulary":
+        vocabulary_match_keys.add(match_key)
+
+
 def extract_context_sentences(subject: Subject):
     try:
         payload = json.loads(subject.data_json)
@@ -597,11 +615,12 @@ def build_notion_highlighted_sentence(sentence_ja: str, changed_characters: str,
 def run_basic_analysis(candidates, movement_level_map):
     db = SessionLocal()
     results = []
+    vocabulary_match_keys = set()
 
     try:
         vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
 
-        for candidate in candidates:
+        for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate["resolved_subject_id"]
             changed_characters = candidate["characters"]
             old_level = int(candidate["current_level"])
@@ -658,6 +677,18 @@ def run_basic_analysis(candidates, movement_level_map):
                     if not result_type:
                         continue
 
+                    match_key = (
+                        "context",
+                        subject.subject_id,
+                        sentence.get("sentence_label", ""),
+                        changed_characters,
+                    )
+
+                    if should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+                        continue
+
+                    remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
+
                     confidence, review_note = get_confidence_and_note(
                         match_method,
                         changed_characters,
@@ -712,6 +743,7 @@ def run_basic_analysis(candidates, movement_level_map):
 def run_support_content_analysis(candidates, movement_level_map):
     db = SessionLocal()
     results = []
+    vocabulary_match_keys = set()
     review_note = (
         "Changed item is referenced in this support content and may now be "
         "above the used-in item level."
@@ -720,7 +752,7 @@ def run_support_content_analysis(candidates, movement_level_map):
     try:
         subjects = db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
 
-        for candidate in candidates:
+        for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate["resolved_subject_id"]
             changed_characters = candidate["characters"]
             old_level = int(candidate["current_level"])
@@ -749,6 +781,18 @@ def run_support_content_analysis(candidates, movement_level_map):
                 for content in extract_support_content(subject):
                     if changed_characters not in content["text"]:
                         continue
+
+                    match_key = (
+                        "support",
+                        subject.subject_id,
+                        content["field_name"],
+                        changed_characters,
+                    )
+
+                    if should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+                        continue
+
+                    remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
 
                     results.append(
                         {
@@ -1056,9 +1100,11 @@ def collocation_matches_subject(
 def run_collocation_analysis(validated_rows, movement_candidates, movement_level_map):
     db = SessionLocal()
     results = []
+    vocabulary_match_keys = set()
 
     try:
         vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        prioritized_candidates = sort_candidates_by_match_priority(movement_candidates)
 
         for row in validated_rows:
             if row["status"] != "ok" or row["subject_level"] is None:
@@ -1071,7 +1117,7 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
             token_surfaces = {token.surface() for token in tokens}
             token_dictionary_forms = {token.dictionary_form() for token in tokens}
 
-            for candidate in movement_candidates:
+            for candidate in prioritized_candidates:
                 old_level = int(candidate["current_level"])
                 new_level = int(candidate["new_level"])
                 candidate_subject = (
@@ -1106,6 +1152,18 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
                     continue
 
                 changed_characters = candidate_subject.characters or ""
+                match_key = (
+                    "collocation",
+                    row["collocation_id"] or row["line_number"],
+                    used_in_subject_id,
+                    changed_characters,
+                )
+
+                if should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+                    continue
+
+                remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
+
                 wk_parts_of_speech = extract_parts_of_speech(candidate_subject)
                 confidence, review_note = get_confidence_and_note(
                     match_method,
