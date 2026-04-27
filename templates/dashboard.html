@@ -221,6 +221,39 @@
   </table>
   {% endif %}
 
+  <h3>Support Content Results</h3>
+  <p>Matches found: {{ support_results|length }}</p>
+  <p>Support content candidates: {{ support_candidate_count }}</p>
+
+  {% if support_results %}
+  <table id="support-results-table" border="1" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Changed Item</th>
+        <th>Used In</th>
+        <th>Content Type</th>
+        <th>Matched Text</th>
+        <th>Result Type</th>
+        <th>Confidence</th>
+        <th>Review Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in support_results %}
+      <tr>
+        <td>{{ result.changed_item_display }}</td>
+        <td>{{ result.used_in_display }}</td>
+        <td>{{ result.content_type }}</td>
+        <td>{{ result.matched_text }}</td>
+        <td>{{ result.result_type }}</td>
+        <td>{{ result.confidence }}</td>
+        <td>{{ result.review_note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
   <details style="margin-top: 16px;">
     <summary><strong>Show validation details</strong></summary>
 

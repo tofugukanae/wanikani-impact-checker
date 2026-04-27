@@ -56,10 +56,11 @@ WANIKANI_API_TOKEN = getenv("WANIKANI_API_TOKEN", "")
 WANIKANI_API_REVISION = getenv("WANIKANI_API_REVISION", "20170710")
 WANIKANI_SUBJECTS_URL = "https://api.wanikani.com/v2/subjects"
 latest_movement_candidates = []
+latest_movement_level_map = {}
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
-SUPPORTED_SUBJECT_TYPES = {"vocabulary"}
+SUPPORTED_SUBJECT_TYPES = {"vocabulary", "kanji"}
 
 HEADER_ALIASES = {
     "characters": ["characters", "Subjects", "subjects"],
@@ -224,7 +225,7 @@ def validate_csv_text(text: str):
         db.close()
 
 
-def get_analysis_candidates(validated_rows):
+def get_context_candidates(validated_rows):
     candidates = []
 
     for row in validated_rows:
@@ -236,6 +237,84 @@ def get_analysis_candidates(validated_rows):
             candidates.append(row)
 
     return candidates
+
+
+def get_collocation_candidates(validated_rows):
+    return get_context_candidates(validated_rows)
+
+
+def get_support_candidates(validated_rows):
+    candidates = []
+
+    for row in validated_rows:
+        if (
+            row["status"] == "ok"
+            and row["subject_type"] in {"vocabulary", "kanji"}
+            and row["resolved_subject_id"]
+        ):
+            candidates.append(row)
+
+    return candidates
+
+
+def build_movement_level_map(candidates):
+    movement_levels = {}
+
+    for candidate in candidates:
+        subject_id = candidate.get("resolved_subject_id")
+        new_level_raw = candidate.get("new_level")
+
+        if not subject_id or not new_level_raw:
+            continue
+
+        try:
+            movement_levels[int(subject_id)] = int(new_level_raw)
+        except (TypeError, ValueError):
+            continue
+
+    return movement_levels
+
+
+def get_result_type_with_final_levels(
+    old_level,
+    changed_final_level,
+    used_in_subject_id,
+    used_in_current_level,
+    movement_level_map,
+):
+    used_in_final_level = movement_level_map.get(
+        int(used_in_subject_id),
+        int(used_in_current_level),
+    )
+
+    if changed_final_level <= used_in_final_level:
+        return None, used_in_final_level
+
+    if old_level <= used_in_final_level:
+        return "newly_broken", used_in_final_level
+
+    if old_level > used_in_final_level:
+        return "already_broken", used_in_final_level
+
+    return None, used_in_final_level
+
+
+def sort_candidates_by_match_priority(candidates):
+    priority = {
+        "vocabulary": 0,
+        "kanji": 1,
+    }
+
+    return sorted(candidates, key=lambda candidate: priority.get(candidate.get("subject_type"), 2))
+
+
+def should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+    return candidate.get("subject_type") == "kanji" and match_key in vocabulary_match_keys
+
+
+def remember_vocabulary_match(candidate, match_key, vocabulary_match_keys):
+    if candidate.get("subject_type") == "vocabulary":
+        vocabulary_match_keys.add(match_key)
 
 
 def extract_context_sentences(subject: Subject):
@@ -277,6 +356,48 @@ def extract_parts_of_speech(subject: Subject):
 
     data = payload.get("data", {})
     return data.get("parts_of_speech", []) or []
+
+
+SUPPORT_CONTENT_FIELDS = [
+    ("meaning_mnemonic", "Meaning Mnemonic"),
+    ("reading_mnemonic", "Reading Mnemonic"),
+    ("meaning_hint", "Meaning Hint"),
+    ("reading_hint", "Reading Hint"),
+]
+
+
+def extract_support_content(subject: Subject):
+    try:
+        payload = json.loads(subject.data_json)
+    except Exception:
+        return []
+
+    data = payload.get("data", {})
+    content = []
+
+    for field_name, label in SUPPORT_CONTENT_FIELDS:
+        text = (data.get(field_name) or "").strip()
+
+        if text:
+            content.append(
+                {
+                    "field_name": field_name,
+                    "label": label,
+                    "text": text,
+                }
+            )
+
+    return content
+
+
+def get_support_confidence(subject_type):
+    if subject_type == "vocabulary":
+        return "high"
+
+    if subject_type == "kanji":
+        return "medium"
+
+    return "medium"
 
 
 def is_verb_like(parts_of_speech):
@@ -491,14 +612,15 @@ def build_notion_highlighted_sentence(sentence_ja: str, changed_characters: str,
 
     return "".join(parts)
 
-def run_basic_analysis(candidates):
+def run_basic_analysis(candidates, movement_level_map):
     db = SessionLocal()
     results = []
+    vocabulary_match_keys = set()
 
     try:
         vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
 
-        for candidate in candidates:
+        for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate["resolved_subject_id"]
             changed_characters = candidate["characters"]
             old_level = int(candidate["current_level"])
@@ -544,15 +666,28 @@ def run_basic_analysis(candidates):
                     if not match_method:
                         continue
 
-                    result_type = None
-
-                    if old_level <= used_in_level and new_level > used_in_level:
-                        result_type = "newly_broken"
-                    elif old_level > used_in_level and new_level > used_in_level:
-                        result_type = "already_broken"
+                    result_type, used_in_final_level = get_result_type_with_final_levels(
+                        old_level,
+                        new_level,
+                        subject.subject_id,
+                        used_in_level,
+                        movement_level_map,
+                    )
 
                     if not result_type:
                         continue
+
+                    match_key = (
+                        "context",
+                        subject.subject_id,
+                        sentence.get("sentence_label", ""),
+                        changed_characters,
+                    )
+
+                    if should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+                        continue
+
+                    remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
 
                     confidence, review_note = get_confidence_and_note(
                         match_method,
@@ -585,6 +720,7 @@ def run_basic_analysis(candidates):
                             "used_in_subject_id": subject.subject_id,
                             "used_in_characters": subject.characters,
                             "used_in_level": used_in_level,
+                            "used_in_final_level": used_in_final_level,
                             "sentence_label": sentence.get("sentence_label", ""),
                             "sentence_ja": sentence_ja_raw,
                             "sentence_ja_highlighted": sentence_ja_highlighted or sentence_ja_raw,
@@ -602,6 +738,86 @@ def run_basic_analysis(candidates):
         return results
     finally:
         db.close()
+
+
+def run_support_content_analysis(candidates, movement_level_map):
+    db = SessionLocal()
+    results = []
+    vocabulary_match_keys = set()
+    review_note = (
+        "Changed item is referenced in this support content and may now be "
+        "above the used-in item level."
+    )
+
+    try:
+        subjects = db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
+
+        for candidate in sort_candidates_by_match_priority(candidates):
+            changed_subject_id = candidate["resolved_subject_id"]
+            changed_characters = candidate["characters"]
+            old_level = int(candidate["current_level"])
+            new_level = int(candidate["new_level"])
+            changed_subject_type = candidate["subject_type"]
+
+            if not changed_characters:
+                continue
+
+            for subject in subjects:
+                if subject.subject_id == changed_subject_id:
+                    continue
+
+                used_in_level = subject.level
+                result_type, used_in_final_level = get_result_type_with_final_levels(
+                    old_level,
+                    new_level,
+                    subject.subject_id,
+                    used_in_level,
+                    movement_level_map,
+                )
+
+                if not result_type:
+                    continue
+
+                for content in extract_support_content(subject):
+                    if changed_characters not in content["text"]:
+                        continue
+
+                    match_key = (
+                        "support",
+                        subject.subject_id,
+                        content["field_name"],
+                        changed_characters,
+                    )
+
+                    if should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+                        continue
+
+                    remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
+
+                    results.append(
+                        {
+                            "changed_subject_id": changed_subject_id,
+                            "changed_characters": changed_characters,
+                            "changed_item_display": f"{changed_characters} ({old_level} → {new_level})",
+                            "old_level": old_level,
+                            "new_level": new_level,
+                            "used_in_subject_id": subject.subject_id,
+                            "used_in_characters": subject.characters,
+                            "used_in_level": used_in_level,
+                            "used_in_final_level": used_in_final_level,
+                            "used_in_display": f"{subject.characters} ({used_in_level})",
+                            "content_type": content["label"],
+                            "matched_text": content["text"],
+                            "result_type": result_type,
+                            "confidence": get_support_confidence(changed_subject_type),
+                            "review_note": review_note,
+                        }
+                    )
+
+        return results
+    finally:
+        db.close()
+
 
 @app.get("/", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -881,12 +1097,14 @@ def collocation_matches_subject(
     return None
 
 
-def run_collocation_analysis(validated_rows, movement_candidates):
+def run_collocation_analysis(validated_rows, movement_candidates, movement_level_map):
     db = SessionLocal()
     results = []
+    vocabulary_match_keys = set()
 
     try:
         vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        prioritized_candidates = sort_candidates_by_match_priority(movement_candidates)
 
         for row in validated_rows:
             if row["status"] != "ok" or row["subject_level"] is None:
@@ -899,7 +1117,7 @@ def run_collocation_analysis(validated_rows, movement_candidates):
             token_surfaces = {token.surface() for token in tokens}
             token_dictionary_forms = {token.dictionary_form() for token in tokens}
 
-            for candidate in movement_candidates:
+            for candidate in prioritized_candidates:
                 old_level = int(candidate["current_level"])
                 new_level = int(candidate["new_level"])
                 candidate_subject = (
@@ -911,12 +1129,13 @@ def run_collocation_analysis(validated_rows, movement_candidates):
                 if not candidate_subject or candidate_subject.subject_id == used_in_subject_id:
                     continue
 
-                result_type = None
-
-                if old_level <= used_in_level and new_level > used_in_level:
-                    result_type = "newly_broken"
-                elif old_level > used_in_level and new_level > used_in_level:
-                    result_type = "already_broken"
+                result_type, used_in_final_level = get_result_type_with_final_levels(
+                    old_level,
+                    new_level,
+                    used_in_subject_id,
+                    used_in_level,
+                    movement_level_map,
+                )
 
                 if not result_type:
                     continue
@@ -933,6 +1152,18 @@ def run_collocation_analysis(validated_rows, movement_candidates):
                     continue
 
                 changed_characters = candidate_subject.characters or ""
+                match_key = (
+                    "collocation",
+                    row["collocation_id"] or row["line_number"],
+                    used_in_subject_id,
+                    changed_characters,
+                )
+
+                if should_skip_kanji_fallback(candidate, match_key, vocabulary_match_keys):
+                    continue
+
+                remember_vocabulary_match(candidate, match_key, vocabulary_match_keys)
+
                 wk_parts_of_speech = extract_parts_of_speech(candidate_subject)
                 confidence, review_note = get_confidence_and_note(
                     match_method,
@@ -961,6 +1192,7 @@ def run_collocation_analysis(validated_rows, movement_candidates):
                         "used_in_subject_id": used_in_subject_id,
                         "used_in_characters": row["subject_characters"],
                         "used_in_level": used_in_level,
+                        "used_in_final_level": used_in_final_level,
                         "sentence_label": row["pattern_of_use"],
                         "sentence_ja": collocation_ja,
                         "sentence_ja_highlighted": highlighted_ja or collocation_ja,
@@ -993,7 +1225,7 @@ def fetch_all_subjects():
         raise ValueError("WANIKANI_API_TOKEN is missing.")
 
     all_subjects = []
-    next_url = WANIKANI_SUBJECTS_URL + "?types=vocabulary"
+    next_url = WANIKANI_SUBJECTS_URL + "?types=vocabulary,kanji"
 
     while next_url:
         response = requests.get(next_url, headers=get_wanikani_headers(), timeout=30)
@@ -1101,6 +1333,8 @@ async def dashboard(request: Request):
             "analysis_candidate_count": 0,
             "analysis_results": [],
             "analysis_results_tsv": "",
+            "support_candidate_count": 0,
+            "support_results": [],
             "sync_message": None,
             "sync_error": None,
             "movement_candidate_count": len(latest_movement_candidates),
@@ -1126,6 +1360,7 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
         collocation_results = run_collocation_analysis(
             validation["rows"],
             latest_movement_candidates,
+            latest_movement_level_map,
         )
 
     return templates.TemplateResponse(
@@ -1148,6 +1383,7 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_csv(request: Request, file: UploadFile = File(...)):
     global latest_movement_candidates
+    global latest_movement_level_map
 
     if not is_logged_in(request):
         return RedirectResponse(url="/", status_code=303)
@@ -1156,9 +1392,15 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     text = raw_bytes.decode("utf-8", errors="replace")
 
     validation = validate_csv_text(text)
-    analysis_candidates = get_analysis_candidates(validation["rows"])
-    latest_movement_candidates = analysis_candidates
-    analysis_results = run_basic_analysis(analysis_candidates)
+    analysis_candidates = get_context_candidates(validation["rows"])
+    collocation_candidates = get_collocation_candidates(validation["rows"])
+    support_candidates = get_support_candidates(validation["rows"])
+    movement_candidates = get_support_candidates(validation["rows"])
+    movement_level_map = build_movement_level_map(movement_candidates)
+    latest_movement_candidates = collocation_candidates
+    latest_movement_level_map = movement_level_map
+    analysis_results = run_basic_analysis(analysis_candidates, movement_level_map)
+    support_results = run_support_content_analysis(support_candidates, movement_level_map)
 
     safe_name = file.filename.rsplit(".", 1)[0]
     export_filename = f"{safe_name}-analysis-results.csv"
@@ -1182,6 +1424,8 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
             "analysis_candidate_count": len(analysis_candidates),
             "analysis_results": analysis_results,
             "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
+            "support_candidate_count": len(support_candidates),
+            "support_results": support_results,
             "sync_message": None,
             "sync_error": None,
             "movement_candidate_count": len(latest_movement_candidates),
@@ -1198,7 +1442,7 @@ async def sync_subjects(request: Request):
         subjects = fetch_all_subjects()
         saved_count = save_subjects_to_db(subjects)
         sync_message = (
-            f"Fetched {len(subjects)} vocabulary subjects from WaniKani API "
+            f"Fetched {len(subjects)} vocabulary and kanji subjects from WaniKani API "
             f"and saved {saved_count} rows to SQLite."
         )
         sync_error = None
@@ -1219,6 +1463,8 @@ async def sync_subjects(request: Request):
             "analysis_candidate_count": 0,
             "analysis_results": [],
             "analysis_results_tsv": "",
+            "support_candidate_count": 0,
+            "support_results": [],
             "sync_message": sync_message,
             "sync_error": sync_error,
         },
