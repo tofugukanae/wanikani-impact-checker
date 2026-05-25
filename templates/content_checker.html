@@ -41,6 +41,11 @@
     </tbody>
   </table>
 
+  {% if result.not_on_wk_display %}
+  <h3>Not on WK</h3>
+  <div style="border: 1px solid #999; padding: 8px; display: inline-block; min-width: 240px; white-space: pre-line;">{{ result.not_on_wk_display }}</div>
+  {% endif %}
+
   <textarea id="content-notion-copy-text" style="position:absolute; left:-9999px; top:-9999px;">{{ result.detected_items }}</textarea>
   {% endif %}
 

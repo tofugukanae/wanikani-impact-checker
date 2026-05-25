@@ -621,6 +621,15 @@ def is_kanji_character(character):
     )
 
 
+def is_japanese_character(character):
+    codepoint = ord(character)
+    return (
+        0x3040 <= codepoint <= 0x309F
+        or 0x30A0 <= codepoint <= 0x30FF
+        or is_kanji_character(character)
+    )
+
+
 def find_all_spans(text, needle):
     spans = []
     start = 0
@@ -639,6 +648,18 @@ def find_all_spans(text, needle):
 
 def spans_overlap(first, second):
     return first[0] < second[1] and second[0] < first[1]
+
+
+def token_span_from_surface(text, surface, start):
+    index = text.find(surface, start)
+
+    if index == -1:
+        index = text.find(surface)
+
+    if index == -1:
+        return None, start
+
+    return (index, index + len(surface)), index + len(surface)
 
 
 def detect_content_vocabulary(text, vocabulary_subjects):
@@ -682,13 +703,69 @@ def detect_content_vocabulary(text, vocabulary_subjects):
     return list(detected.values()), occupied_spans
 
 
-def detect_content_kanji(text, kanji_subjects, vocabulary_spans):
+def is_content_token_candidate(token):
+    surface = token.surface()
+
+    if not surface or not any(is_japanese_character(character) for character in surface):
+        return False
+
+    part_of_speech = token.part_of_speech()
+
+    if part_of_speech and part_of_speech[0] in {"助詞", "助動詞", "補助記号", "空白", "記号"}:
+        return False
+
+    if len(surface) == 1 and all("ぁ" <= character <= "ん" for character in surface):
+        return False
+
+    return True
+
+
+def detect_not_on_wk_vocabulary(text, vocabulary_subjects, occupied_spans):
+    wk_vocabulary = {
+        subject.characters
+        for subject in vocabulary_subjects
+        if subject.characters
+    }
+    detected = {}
+    search_start = 0
+
+    for token in tokenize_japanese(text):
+        surface = token.surface()
+        span, search_start = token_span_from_surface(text, surface, search_start)
+
+        if not span:
+            continue
+
+        if not is_content_token_candidate(token):
+            continue
+
+        dictionary_form = token.dictionary_form() or surface
+
+        if surface in wk_vocabulary or dictionary_form in wk_vocabulary:
+            continue
+
+        if any(span == occupied for occupied in occupied_spans):
+            continue
+
+        display = dictionary_form if dictionary_form != "*" else surface
+
+        if not display:
+            continue
+
+        detected.setdefault(display, span)
+        occupied_spans.append(span)
+
+    return [{"characters": characters} for characters in detected.keys()], occupied_spans
+
+
+def detect_content_kanji(text, kanji_subjects, occupied_spans):
     kanji_by_character = {
         subject.characters: subject
         for subject in kanji_subjects
         if subject.characters
     }
     detected = {}
+    not_on_wk = {}
 
     for index, character in enumerate(text):
         if not is_kanji_character(character):
@@ -696,29 +773,36 @@ def detect_content_kanji(text, kanji_subjects, vocabulary_spans):
 
         character_span = (index, index + 1)
 
-        if any(spans_overlap(character_span, vocabulary_span) for vocabulary_span in vocabulary_spans):
+        if any(spans_overlap(character_span, occupied_span) for occupied_span in occupied_spans):
             continue
 
         subject = kanji_by_character.get(character)
 
         if subject:
             detected[subject.subject_id] = subject
+        else:
+            not_on_wk[character] = {"characters": character}
 
-    return list(detected.values())
+    return list(detected.values()), list(not_on_wk.values())
 
 
-def format_detected_items(input_text, vocabulary_subjects, kanji_subjects):
+def format_detected_items(input_text, vocabulary_subjects, kanji_subjects, not_on_wk_vocabulary, not_on_wk_kanji):
     vocab_items = sorted(vocabulary_subjects, key=lambda subject: (subject.level, subject.characters or ""))
     kanji_items = sorted(kanji_subjects, key=lambda subject: (subject.level, subject.characters or ""))
+    not_on_wk_vocab_items = sorted(not_on_wk_vocabulary, key=lambda item: item["characters"])
+    not_on_wk_kanji_items = sorted(not_on_wk_kanji, key=lambda item: item["characters"])
 
-    if not vocab_items and not kanji_items:
+    if not vocab_items and not kanji_items and not not_on_wk_vocab_items and not not_on_wk_kanji_items:
         detected_items_text = "No items detected"
+        not_on_wk_text = ""
 
         return {
             "input_text": input_text,
             "input_text_html": html.escape(input_text).replace("\n", "<br>"),
             "detected_items": detected_items_text,
             "detected_items_html": html.escape(detected_items_text).replace("\n", "<br>"),
+            "not_on_wk_display": not_on_wk_text,
+            "not_on_wk_html": "",
             "vocabulary_items": vocab_items,
             "kanji_items": kanji_items,
         }
@@ -737,15 +821,27 @@ def format_detected_items(input_text, vocabulary_subjects, kanji_subjects):
         for subject in kanji_items:
             lines.append(f"{subject.characters} ({subject.level})")
 
+    not_on_wk_lines = []
+
+    for item in not_on_wk_vocab_items:
+        not_on_wk_lines.append(item["characters"])
+    for item in not_on_wk_kanji_items:
+        not_on_wk_lines.append(item["characters"])
+
     detected_items_text = "\n".join(lines)
+    not_on_wk_text = "\n".join(not_on_wk_lines)
 
     return {
         "input_text": input_text,
         "input_text_html": html.escape(input_text).replace("\n", "<br>"),
         "detected_items": detected_items_text,
         "detected_items_html": html.escape(detected_items_text).replace("\n", "<br>"),
+        "not_on_wk_display": not_on_wk_text,
+        "not_on_wk_html": html.escape(not_on_wk_text).replace("\n", "<br>"),
         "vocabulary_items": vocab_items,
         "kanji_items": kanji_items,
+        "not_on_wk_vocabulary": not_on_wk_vocab_items,
+        "not_on_wk_kanji": not_on_wk_kanji_items,
     }
 
 
@@ -768,7 +864,12 @@ def analyze_new_content_text(text):
             stripped_text,
             vocabulary_subjects,
         )
-        detected_kanji = detect_content_kanji(
+        not_on_wk_vocabulary, _not_on_wk_spans = detect_not_on_wk_vocabulary(
+            stripped_text,
+            vocabulary_subjects,
+            list(vocabulary_spans),
+        )
+        detected_kanji, not_on_wk_kanji = detect_content_kanji(
             stripped_text,
             kanji_subjects,
             vocabulary_spans,
@@ -778,6 +879,8 @@ def analyze_new_content_text(text):
             stripped_text,
             detected_vocabulary,
             detected_kanji,
+            not_on_wk_vocabulary,
+            not_on_wk_kanji,
         )
     finally:
         db.close()
