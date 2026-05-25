@@ -50,14 +50,19 @@
         <th>WK Parts of Speech</th>
         <th>Confidence</th>
         <th>Review Note</th>
-        <th>Admin Link</th>
       </tr>
     </thead>
     <tbody>
       {% for result in collocation_results %}
       <tr>
         <td>{{ result.changed_item_display }}</td>
-        <td>{{ result.used_in_display }}</td>
+        <td>
+          {% if result.admin_url %}
+          <a href="{{ result.admin_url }}" target="_blank" rel="noopener noreferrer">{{ result.used_in_display }}</a>
+          {% else %}
+          {{ result.used_in_display }}
+          {% endif %}
+        </td>
         <td>{{ result.result_type }}</td>
         <td>{{ result.pattern_of_use }}</td>
         <td>{{ result.sentence_ja_highlighted|safe }}</td>
@@ -66,11 +71,6 @@
         <td>{{ result.wk_parts_of_speech }}</td>
         <td>{{ result.confidence }}</td>
         <td>{{ result.review_note }}</td>
-        <td>
-          {% if result.admin_url %}
-          <a href="{{ result.admin_url }}" target="_blank" rel="noopener noreferrer">Edit</a>
-          {% endif %}
-        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -181,14 +181,19 @@
         <th>WK Parts of Speech</th>
         <th>Confidence</th>
         <th>Review Note</th>
-        <th>Admin Link</th>
       </tr>
     </thead>
     <tbody>
       {% for result in analysis_results %}
       <tr>
         <td>{{ result.changed_item_display }}</td>
-        <td>{{ result.used_in_display }}</td>
+        <td>
+          {% if result.admin_url %}
+          <a href="{{ result.admin_url }}" target="_blank" rel="noopener noreferrer">{{ result.used_in_display }}</a>
+          {% else %}
+          {{ result.used_in_display }}
+          {% endif %}
+        </td>
         <td>{{ result.result_type }}</td>
         <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
         <td>{{ result.sentence_en }}</td>
@@ -196,11 +201,6 @@
         <td>{{ result.wk_parts_of_speech }}</td>
         <td>{{ result.confidence }}</td>
         <td>{{ result.review_note }}</td>
-        <td>
-          {% if result.admin_url %}
-          <a href="{{ result.admin_url }}" target="_blank" rel="noopener noreferrer">Edit</a>
-          {% endif %}
-        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -219,14 +219,19 @@
         <th>WK Parts of Speech</th>
         <th>Confidence</th>
         <th>Review Note</th>
-        <th>Admin Link</th>
       </tr>
     </thead>
     <tbody>
       {% for result in analysis_results %}
       <tr>
         <td>{{ result.changed_item_display }}</td>
-        <td>{{ result.used_in_display }}</td>
+        <td>
+          {% if result.admin_url %}
+          <a href="{{ result.admin_url }}">{{ result.used_in_display }}</a>
+          {% else %}
+          {{ result.used_in_display }}
+          {% endif %}
+        </td>
         <td>{{ result.result_type }}</td>
         <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
         <td>{{ result.sentence_en }}</td>
@@ -234,11 +239,6 @@
         <td>{{ result.wk_parts_of_speech }}</td>
         <td>{{ result.confidence }}</td>
         <td>{{ result.review_note }}</td>
-        <td>
-          {% if result.admin_url %}
-          <a href="{{ result.admin_url }}">Edit</a>
-          {% endif %}
-        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -260,24 +260,24 @@
         <th>Result Type</th>
         <th>Confidence</th>
         <th>Review Note</th>
-        <th>Admin Link</th>
       </tr>
     </thead>
     <tbody>
       {% for result in support_results %}
       <tr>
         <td>{{ result.changed_item_display }}</td>
-        <td>{{ result.used_in_display }}</td>
+        <td>
+          {% if result.admin_url %}
+          <a href="{{ result.admin_url }}" target="_blank" rel="noopener noreferrer">{{ result.used_in_display }}</a>
+          {% else %}
+          {{ result.used_in_display }}
+          {% endif %}
+        </td>
         <td>{{ result.content_type }}</td>
         <td>{{ result.matched_text }}</td>
         <td>{{ result.result_type }}</td>
         <td>{{ result.confidence }}</td>
         <td>{{ result.review_note }}</td>
-        <td>
-          {% if result.admin_url %}
-          <a href="{{ result.admin_url }}" target="_blank" rel="noopener noreferrer">Edit</a>
-          {% endif %}
-        </td>
       </tr>
       {% endfor %}
     </tbody>
