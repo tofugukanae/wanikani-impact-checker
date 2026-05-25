@@ -129,6 +129,7 @@
   <form action="/sync-subjects" method="post">
     <button type="submit">Refresh Data</button>
   </form>
+  <p>Last fetched: {{ last_subject_sync or "Never" }}</p>
 
   {% if sync_message %}
   <p>{{ sync_message }}</p>

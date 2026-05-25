@@ -4,6 +4,7 @@ import csv
 import html
 import json
 import time
+from datetime import datetime, timezone
 from io import StringIO
 
 import requests
@@ -42,12 +43,20 @@ class Subject(Base):
     data_json = Column(Text, nullable=False)
 
 
+class AppMetadata(Base):
+    __tablename__ = "app_metadata"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 app.add_middleware(
     SessionMiddleware,
     secret_key=getenv("SECRET_KEY", "dev-secret-key"),
+    max_age=60 * 60 * 8,
 )
 
 templates = Jinja2Templates(directory="templates")
@@ -90,6 +99,48 @@ def normalize_subject_type(subject_type_raw: str) -> str:
         "radical": "radical",
     }
     return subject_type_map.get(subject_type_raw.lower(), subject_type_raw.lower())
+
+
+def get_metadata_value(key):
+    db = SessionLocal()
+
+    try:
+        metadata = db.query(AppMetadata).filter(AppMetadata.key == key).first()
+        return metadata.value if metadata else None
+    finally:
+        db.close()
+
+
+def set_metadata_value(key, value):
+    db = SessionLocal()
+
+    try:
+        metadata = db.query(AppMetadata).filter(AppMetadata.key == key).first()
+
+        if metadata:
+            metadata.value = value
+        else:
+            db.add(AppMetadata(key=key, value=value))
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def format_last_sync_timestamp(value):
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def get_last_subject_sync_display():
+    return format_last_sync_timestamp(get_metadata_value("subjects_last_fetched_at"))
 
 
 def is_hidden_subject_payload(payload):
@@ -1685,6 +1736,7 @@ async def dashboard(request: Request):
             "support_results": [],
             "sync_message": None,
             "sync_error": None,
+            "last_subject_sync": get_last_subject_sync_display(),
             "movement_candidate_count": len(latest_movement_candidates),
         },
     )
@@ -1757,6 +1809,7 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
             "collocation_error": collocation_error,
             "collocation_results": collocation_results,
             "collocation_result_count": len(collocation_results),
+            "last_subject_sync": get_last_subject_sync_display(),
             "movement_candidate_count": len(latest_movement_candidates),
         },
     )
@@ -1814,6 +1867,7 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
             "support_results": support_results,
             "sync_message": None,
             "sync_error": None,
+            "last_subject_sync": get_last_subject_sync_display(),
             "movement_candidate_count": len(latest_movement_candidates),
         },
     )
@@ -1827,6 +1881,10 @@ async def sync_subjects(request: Request):
     try:
         subjects = fetch_all_subjects()
         saved_count = save_subjects_to_db(subjects)
+        set_metadata_value(
+            "subjects_last_fetched_at",
+            datetime.now(timezone.utc).isoformat(),
+        )
         sync_message = (
             f"Fetched {len(subjects)} vocabulary and kanji subjects from WaniKani API "
             f"and saved {saved_count} rows to SQLite."
@@ -1853,6 +1911,8 @@ async def sync_subjects(request: Request):
             "support_results": [],
             "sync_message": sync_message,
             "sync_error": sync_error,
+            "last_subject_sync": get_last_subject_sync_display(),
+            "movement_candidate_count": len(latest_movement_candidates),
         },
     )
 
