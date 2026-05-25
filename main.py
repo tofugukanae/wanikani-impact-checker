@@ -507,6 +507,28 @@ def sort_results_for_display(results):
     )
 
 
+def build_admin_url(subject_id, section=None):
+    if not subject_id:
+        return ""
+
+    url = f"https://www.wanikani.com/admin/subjects/{subject_id}"
+
+    if section:
+        url += f"/{section}"
+
+    return url
+
+
+def get_support_admin_section(field_name):
+    if field_name.startswith("meaning_"):
+        return "meaning_support"
+
+    if field_name.startswith("reading_"):
+        return "reading_support"
+
+    return None
+
+
 def extract_context_sentences(subject: Subject):
     try:
         payload = json.loads(subject.data_json)
@@ -1108,6 +1130,7 @@ def run_basic_analysis(candidates, movement_level_map):
                             "confidence": confidence,
                             "review_note": review_note,
                             "used_in_display": f"{subject.characters} ({used_in_level}) {sentence.get('sentence_label', '')}",
+                            "admin_url": build_admin_url(subject.subject_id, "sentences"),
                         }
                     )
 
@@ -1192,6 +1215,10 @@ def run_support_content_analysis(candidates, movement_level_map):
                             "result_type": result_type,
                             "confidence": get_support_confidence(changed_subject_type),
                             "review_note": review_note,
+                            "admin_url": build_admin_url(
+                                subject.subject_id,
+                                get_support_admin_section(content["field_name"]),
+                            ),
                         }
                     )
 
@@ -1228,6 +1255,7 @@ def build_analysis_results_csv(results):
         "wk_parts_of_speech",
         "confidence",
         "review_note",
+        "admin_url",
     ])
 
     for result in results:
@@ -1245,6 +1273,7 @@ def build_analysis_results_csv(results):
         result.get("wk_parts_of_speech", ""),
         result.get("confidence", ""),
         result.get("review_note", ""),
+        result.get("admin_url", ""),
     ])
 
     return output.getvalue()
@@ -1267,6 +1296,7 @@ def build_analysis_results_tsv(results):
         "wk_parts_of_speech",
         "confidence",
         "review_note",
+        "admin_url",
     ])
 
     for result in results:
@@ -1284,6 +1314,7 @@ def build_analysis_results_tsv(results):
             result.get("wk_parts_of_speech", ""),
             result.get("confidence", ""),
             result.get("review_note", ""),
+            result.get("admin_url", ""),
         ])
 
     return output.getvalue()
@@ -1598,6 +1629,7 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
                         "confidence": confidence,
                         "review_note": review_note,
                         "used_in_display": f"{row['subject_characters']} ({used_in_level}) {row['pattern_of_use']}",
+                        "admin_url": build_admin_url(used_in_subject_id, "collocations"),
                         "collocation_id": row["collocation_id"],
                         "pattern_of_use": row["pattern_of_use"],
                     }
