@@ -92,6 +92,46 @@ def normalize_subject_type(subject_type_raw: str) -> str:
     return subject_type_map.get(subject_type_raw.lower(), subject_type_raw.lower())
 
 
+def is_hidden_subject_payload(payload):
+    return bool((payload.get("data") or {}).get("hidden_at"))
+
+
+def is_hidden_subject(subject: Subject) -> bool:
+    try:
+        payload = json.loads(subject.data_json)
+    except Exception:
+        return False
+
+    return is_hidden_subject_payload(payload)
+
+
+def visible_subjects(subjects):
+    return [subject for subject in subjects if not is_hidden_subject(subject)]
+
+
+def get_visible_subject_by_id(db, subject_id):
+    subject = db.query(Subject).filter(Subject.subject_id == subject_id).first()
+
+    if subject and not is_hidden_subject(subject):
+        return subject
+
+    return None
+
+
+def get_visible_subject_by_characters(db, characters, subject_type):
+    subjects = (
+        db.query(Subject)
+        .filter(Subject.characters == characters, Subject.subject_type == subject_type)
+        .all()
+    )
+
+    for subject in subjects:
+        if not is_hidden_subject(subject):
+            return subject
+
+    return None
+
+
 def validate_csv_text(text: str):
     reader = csv.DictReader(StringIO(text))
     headers = reader.fieldnames or []
@@ -173,11 +213,7 @@ def validate_csv_text(text: str):
                 message = "This subject type is not supported in v1 analysis."
 
             if status == "ok" and row_type == "movement":
-                subject = (
-                    db.query(Subject)
-                    .filter(Subject.characters == characters, Subject.subject_type == subject_type)
-                    .first()
-                )
+                subject = get_visible_subject_by_characters(db, characters, subject_type)
 
                 if not subject:
                     status = "not_found"
@@ -191,11 +227,7 @@ def validate_csv_text(text: str):
                         message = f"CSV current_level is {current_level}, but WaniKani data says {db_level}."
 
             if status == "ok" and row_type == "addition":
-                subject = (
-                    db.query(Subject)
-                    .filter(Subject.characters == characters, Subject.subject_type == subject_type)
-                    .first()
-                )
+                subject = get_visible_subject_by_characters(db, characters, subject_type)
 
                 if subject:
                     resolved_subject_id = subject.subject_id
@@ -653,8 +685,12 @@ def analyze_new_content_text(text):
     db = SessionLocal()
 
     try:
-        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
-        kanji_subjects = db.query(Subject).filter(Subject.subject_type == "kanji").all()
+        vocabulary_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        )
+        kanji_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "kanji").all()
+        )
         detected_vocabulary, vocabulary_spans = detect_content_vocabulary(
             stripped_text,
             vocabulary_subjects,
@@ -913,7 +949,9 @@ def run_basic_analysis(candidates, movement_level_map):
     vocabulary_match_keys = set()
 
     try:
-        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        vocabulary_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        )
 
         for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate.get("resolved_subject_id")
@@ -923,11 +961,7 @@ def run_basic_analysis(candidates, movement_level_map):
 
             changed_subject = None
             if changed_subject_id:
-                changed_subject = (
-                    db.query(Subject)
-                    .filter(Subject.subject_id == changed_subject_id)
-                    .first()
-                )
+                changed_subject = get_visible_subject_by_id(db, changed_subject_id)
             wk_parts_of_speech = extract_parts_of_speech(changed_subject) if changed_subject else []
 
             for subject in vocabulary_subjects:
@@ -1041,7 +1075,9 @@ def run_support_content_analysis(candidates, movement_level_map):
     )
 
     try:
-        subjects = db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
+        subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
+        )
 
         for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate.get("resolved_subject_id")
@@ -1220,7 +1256,7 @@ def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_
         except ValueError:
             return None, None, "invalid_subject_id", "subject_id must be an integer."
 
-        subject = db.query(Subject).filter(Subject.subject_id == subject_id).first()
+        subject = get_visible_subject_by_id(db, subject_id)
 
         if not subject:
             return subject_id, None, "not_found", "No matching subject was found in the local WaniKani data."
@@ -1230,10 +1266,10 @@ def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_
     if not used_in_item:
         return None, None, "missing_field", "Either subject_id or used_in_item is required."
 
-    query = db.query(Subject).filter(
+    subjects = db.query(Subject).filter(
         Subject.characters == used_in_item,
         Subject.subject_type == "vocabulary",
-    )
+    ).all()
 
     if used_in_level_raw:
         try:
@@ -1241,9 +1277,9 @@ def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_
         except ValueError:
             return None, None, "invalid_level", "used_in_level must be an integer."
 
-        query = query.filter(Subject.level == used_in_level)
+        subjects = [subject for subject in subjects if subject.level == used_in_level]
 
-    subject = query.first()
+    subject = next((subject for subject in subjects if not is_hidden_subject(subject)), None)
 
     if not subject:
         return None, None, "not_found", "No matching used_in_item was found in the local WaniKani data."
@@ -1255,11 +1291,7 @@ def resolve_changed_subject(db, changed_item):
     if not changed_item:
         return None
 
-    return (
-        db.query(Subject)
-        .filter(Subject.characters == changed_item, Subject.subject_type == "vocabulary")
-        .first()
-    )
+    return get_visible_subject_by_characters(db, changed_item, "vocabulary")
 
 
 def parse_level(raw_value):
@@ -1397,7 +1429,9 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
     vocabulary_match_keys = set()
 
     try:
-        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        vocabulary_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        )
         prioritized_candidates = sort_candidates_by_match_priority(movement_candidates)
 
         for row in validated_rows:
@@ -1418,11 +1452,7 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
                 changed_subject_id = candidate.get("resolved_subject_id")
 
                 if changed_subject_id:
-                    candidate_subject = (
-                        db.query(Subject)
-                        .filter(Subject.subject_id == changed_subject_id)
-                        .first()
-                    )
+                    candidate_subject = get_visible_subject_by_id(db, changed_subject_id)
 
                 if changed_subject_id and changed_subject_id == used_in_subject_id:
                     continue
@@ -1563,6 +1593,11 @@ def save_subjects_to_db(subjects):
     try:
         for item in subjects:
             existing = db.query(Subject).filter(Subject.subject_id == item["id"]).first()
+
+            if is_hidden_subject_payload(item):
+                if existing:
+                    db.delete(existing)
+                continue
 
             characters = item.get("data", {}).get("characters")
             level = item.get("data", {}).get("level")
