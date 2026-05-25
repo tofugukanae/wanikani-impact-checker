@@ -4,18 +4,158 @@
 <head>
   <meta charset="UTF-8" />
   <title>New Content Level Checker</title>
+  <style>
+    :root {
+      color: #111;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    body {
+      margin: 0;
+      background: #fff;
+    }
+
+    .app-tabs {
+      display: flex;
+      justify-content: center;
+      border-bottom: 1px solid #d9d9d9;
+      margin-bottom: 34px;
+    }
+
+    .app-tabs a {
+      min-width: 360px;
+      padding: 14px 18px 13px;
+      background: #d9d9d9;
+      color: #111;
+      font-size: 22px;
+      font-weight: 700;
+      text-align: center;
+      text-decoration: none;
+      border: 1px solid transparent;
+      border-bottom: 0;
+    }
+
+    .app-tabs a.active {
+      background: #fff;
+      border-color: #777;
+      border-bottom: 4px solid #111;
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 28px 64px;
+    }
+
+    h1 {
+      margin: 0 0 22px;
+      font-size: 20px;
+      text-align: center;
+    }
+
+    h2 {
+      margin: 36px 0 16px;
+      font-size: 18px;
+      text-align: center;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 16px;
+    }
+
+    form {
+      margin: 0 auto 34px;
+      max-width: 760px;
+      text-align: center;
+    }
+
+    textarea[name="input_text"] {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 180px;
+      padding: 16px;
+      border: 1px solid #b8b8b8;
+      border-radius: 4px;
+      font: inherit;
+      line-height: 1.6;
+      resize: vertical;
+    }
+
+    button {
+      min-width: 104px;
+      padding: 7px 14px;
+      background: #fff;
+      border: 1px solid #999;
+      border-radius: 4px;
+      color: #111;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 24px;
+      border: 1px solid #d2d2d2;
+      table-layout: fixed;
+    }
+
+    th {
+      background: #757575;
+      color: #fff;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    th,
+    td {
+      padding: 22px;
+      border: 2px solid #ddd;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+
+    .results-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin: 6px 0 20px;
+    }
+
+    .status-text {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .not-on-wk-box {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 72px;
+      padding: 18px 22px;
+      border: 1px solid #d2d2d2;
+      background: #fff;
+      white-space: pre-line;
+    }
+  </style>
 </head>
 
 <body>
-  <h1>New Content Level Checker</h1>
-  <nav style="margin-bottom: 16px;">
+  <nav class="app-tabs">
     <a href="/dashboard">Level Movement Checker</a>
-    |
-    <a href="/content-checker">New Content Checker</a>
+    <a class="active" href="/content-checker">Sentence Level Checker</a>
   </nav>
 
+  <main>
+  <h1>Sentence Level Checker</h1>
+
   <form action="/content-checker/analyze" method="post">
-    <textarea name="input_text" rows="8" cols="100" required>{{ input_text }}</textarea>
+    <textarea name="input_text" rows="8" required>{{ input_text }}</textarea>
     <div style="margin-top: 8px;">
       <button type="submit">Analyze</button>
     </div>
@@ -23,9 +163,9 @@
 
   {% if result %}
   <h2>Results</h2>
-  <div style="margin-bottom: 12px;">
+  <div class="results-actions">
     <button type="button" onclick="copyContentCheckerCellForNotion()">Copy for Notion Cell</button>
-    <span id="content-copy-status" style="margin-left: 8px;"></span>
+    <span id="content-copy-status" class="status-text"></span>
   </div>
 
   <table id="content-results-table" border="1" cellpadding="6">
@@ -43,11 +183,12 @@
 
   {% if result.not_on_wk_display %}
   <h3>Not on WK</h3>
-  <div style="border: 1px solid #999; padding: 8px; display: inline-block; min-width: 240px; white-space: pre-line;">{{ result.not_on_wk_display }}</div>
+  <div class="not-on-wk-box">{{ result.not_on_wk_display }}</div>
   {% endif %}
 
   <textarea id="content-notion-copy-text" style="position:absolute; left:-9999px; top:-9999px;">{{ result.detected_items }}</textarea>
   {% endif %}
+  </main>
 
   <script>
     async function copyContentCheckerCellForNotion() {

@@ -4,22 +4,260 @@
 <head>
   <meta charset="UTF-8" />
   <title>WaniKani Level Change Impact Checker</title>
+  <style>
+    :root {
+      color: #111;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    body {
+      margin: 0;
+      background: #fff;
+    }
+
+    .app-tabs {
+      display: flex;
+      justify-content: center;
+      border-bottom: 1px solid #d9d9d9;
+      margin-bottom: 26px;
+    }
+
+    .app-tabs a {
+      min-width: 360px;
+      padding: 14px 18px 13px;
+      background: #d9d9d9;
+      color: #111;
+      font-size: 22px;
+      font-weight: 700;
+      text-align: center;
+      text-decoration: none;
+      border: 1px solid transparent;
+      border-bottom: 0;
+    }
+
+    .app-tabs a.active {
+      background: #fff;
+      border-color: #777;
+      border-bottom: 4px solid #111;
+    }
+
+    main {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 0 28px 64px;
+    }
+
+    h1 {
+      margin: 0 0 20px;
+      font-size: 20px;
+      text-align: center;
+    }
+
+    h2 {
+      margin: 28px 0 14px;
+      font-size: 18px;
+      text-align: center;
+    }
+
+    h3 {
+      margin: 34px 0 14px;
+      font-size: 18px;
+      text-align: center;
+    }
+
+    p {
+      margin: 6px 0;
+      color: #666;
+    }
+
+    form {
+      margin: 8px 0;
+    }
+
+    button,
+    input[type="file"]::file-selector-button {
+      min-width: 104px;
+      padding: 7px 14px;
+      background: #fff;
+      border: 1px solid #999;
+      border-radius: 4px;
+      color: #111;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    input[type="file"] {
+      max-width: 260px;
+      font-size: 12px;
+    }
+
+    a {
+      color: #111;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 36px;
+      border: 1px solid #d2d2d2;
+      table-layout: fixed;
+    }
+
+    th {
+      background: #757575;
+      color: #fff;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    th,
+    td {
+      padding: 26px 22px;
+      border: 2px solid #ddd;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: normal;
+    }
+
+    td {
+      background: #fff;
+    }
+
+    td:nth-child(1),
+    td:nth-child(2),
+    td:nth-child(3) {
+      text-align: center;
+    }
+
+    hr {
+      margin: 52px 72px 28px;
+      border: 0;
+      border-top: 1px solid #d8d8d8;
+    }
+
+    details {
+      max-width: 1320px;
+      margin: 46px auto 0;
+      padding-top: 24px;
+      border-top: 1px solid #d8d8d8;
+      text-align: center;
+    }
+
+    summary {
+      cursor: pointer;
+      font-size: 18px;
+    }
+
+    pre {
+      text-align: left;
+      white-space: pre-wrap;
+    }
+
+    .setup-area {
+      max-width: 560px;
+      margin: 0 auto 52px;
+    }
+
+    .setup-area h2,
+    .setup-area h3,
+    .setup-area p,
+    .setup-area form {
+      text-align: left;
+    }
+
+    .setup-area h2 {
+      text-align: center;
+    }
+
+    .setup-area h3 {
+      margin-top: 24px;
+      font-size: 14px;
+    }
+
+    .results-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin: 6px 0 22px;
+    }
+
+    .inline-form {
+      display: inline;
+      margin: 0;
+    }
+
+    .status-text {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .result-table td:nth-child(1),
+    .result-table td:nth-child(2),
+    .result-table td:nth-child(3),
+    .support-table td:nth-child(1),
+    .support-table td:nth-child(2),
+    .support-table td:nth-child(3),
+    .support-table td:nth-child(5) {
+      text-align: center;
+    }
+
+    .result-table td:nth-child(4),
+    .result-table td:nth-child(5),
+    .support-table td:nth-child(4) {
+      line-height: 1.5;
+    }
+  </style>
 </head>
 
 <body>
-  <h1>WaniKani Level Change Impact Checker</h1>
-  <nav style="margin-bottom: 16px;">
-    <a href="/dashboard">Level Movement Checker</a>
-    |
-    <a href="/content-checker">New Content Checker</a>
+  <nav class="app-tabs">
+    <a class="active" href="/dashboard">Level Movement Checker</a>
+    <a href="/content-checker">Sentence Level Checker</a>
   </nav>
 
-  <h2>Upload Collocations CSV</h2>
+  <main>
+  <h1>WaniKani Level Change Impact Checker</h1>
+
+  <section class="setup-area">
+  <h2>Set Up</h2>
+
+  <h3>Sync WaniKani Data</h3>
+  <form action="/sync-subjects" method="post">
+    <button type="submit">Sync</button>
+  </form>
+  <p>Last fetched: {{ last_subject_sync or "Never" }}</p>
+
+  {% if sync_message %}
+  <p>{{ sync_message }}</p>
+  {% endif %}
+
+  {% if sync_error %}
+  <p style="color: red;">{{ sync_error }}</p>
+  {% endif %}
+
+  <h3>Upload Level Change Plan CSV</h3>
+  <form action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".csv" required />
+    <button type="submit">Upload</button>
+  </form>
+
+  {% if uploaded_filename %}
+  <p>Uploaded file: {{ uploaded_filename }}</p>
+  {% endif %}
+
+  <h3>Upload Collocations CSV</h3>
   <p>Active movement-plan items: {{ movement_candidate_count or 0 }}</p>
   <form action="/upload-collocations-ui" method="post" enctype="multipart/form-data">
     <input type="file" name="file" accept=".csv" required />
-    <button type="submit">Analyze Collocations</button>
+    <button type="submit">Upload</button>
   </form>
+  </section>
 
   {% if collocations_uploaded_filename %}
   <h3>Collocation analysis results</h3>
@@ -37,19 +275,21 @@
     <span id="collocation-copy-status" style="margin-left: 8px;"></span>
   </div>
 
-  <table id="collocation-results-table" border="1" cellpadding="6">
+  <table id="collocation-results-table" class="result-table" border="1" cellpadding="6">
+    <colgroup>
+      <col style="width: 16%;" />
+      <col style="width: 14%;" />
+      <col style="width: 10%;" />
+      <col style="width: 32%;" />
+      <col style="width: 28%;" />
+    </colgroup>
     <thead>
       <tr>
         <th>Above-Level Item</th>
         <th>Used In</th>
-        <th>Result Type</th>
-        <th>Pattern</th>
+        <th>Error Type</th>
         <th>Collocation (JP)</th>
         <th>Collocation (EN)</th>
-        <th>Match Method</th>
-        <th>WK Parts of Speech</th>
-        <th>Confidence</th>
-        <th>Review Note</th>
       </tr>
     </thead>
     <tbody>
@@ -63,14 +303,9 @@
           {{ result.used_in_display }}
           {% endif %}
         </td>
-        <td>{{ result.result_type }}</td>
-        <td>{{ result.pattern_of_use }}</td>
+        <td>{{ {"newly_broken": "NEW", "already_broken": "EXISTING"}.get(result.result_type, result.result_type) }}</td>
         <td>{{ result.sentence_ja_highlighted|safe }}</td>
         <td>{{ result.sentence_en }}</td>
-        <td>{{ result.match_method }}</td>
-        <td>{{ result.wk_parts_of_speech }}</td>
-        <td>{{ result.confidence }}</td>
-        <td>{{ result.review_note }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -131,56 +366,36 @@
   {% endif %}
   {% endif %}
 
-  <h2>Sync WaniKani Data</h2>
-  <form action="/sync-subjects" method="post">
-    <button type="submit">Refresh Data</button>
-  </form>
-  <p>Last fetched: {{ last_subject_sync or "Never" }}</p>
-
-  {% if sync_message %}
-  <p>{{ sync_message }}</p>
-  {% endif %}
-
-  {% if sync_error %}
-  <p style="color: red;">{{ sync_error }}</p>
-  {% endif %}
-
-  <h2>Upload level change CSV</h2>
-  <form action="/upload" method="post" enctype="multipart/form-data">
-    <input type="file" name="file" accept=".csv" required />
-    <button type="submit">Upload</button>
-  </form>
-
   {% if uploaded_filename %}
-  <h3>Uploaded file</h3>
-  <p>{{ uploaded_filename }}</p>
-
-  <h3>Basic analysis results</h3>
+  <h2>Results</h2>
   <p>Matches found: {{ analysis_results|length }}</p>
   <p>Analysis candidates: {{ analysis_candidate_count }}</p>
 
   {% if analysis_results %}
-  <form action="/export-results" method="post" style="margin-bottom: 8px;">
+  <div class="results-actions">
+  <form class="inline-form" action="/export-results" method="post">
     <button type="submit">Export results CSV</button>
   </form>
 
-  <div style="margin-bottom: 12px;">
     <button type="button" onclick="copyResultsTableForNotion()">Copy for Notion</button>
-    <span id="copy-status" style="margin-left: 8px;"></span>
+    <span id="copy-status" class="status-text"></span>
   </div>
 
-  <table id="results-table" border="1" cellpadding="6">
+  <table id="results-table" class="result-table" border="1" cellpadding="6">
+    <colgroup>
+      <col style="width: 16%;" />
+      <col style="width: 14%;" />
+      <col style="width: 10%;" />
+      <col style="width: 32%;" />
+      <col style="width: 28%;" />
+    </colgroup>
     <thead>
       <tr>
         <th>Changed Item</th>
         <th>Used In</th>
-        <th>Result Type</th>
+        <th>Error Type</th>
         <th>Sentence (JP)</th>
         <th>Sentence (EN)</th>
-        <th>Match Method</th>
-        <th>WK Parts of Speech</th>
-        <th>Confidence</th>
-        <th>Review Note</th>
       </tr>
     </thead>
     <tbody>
@@ -194,13 +409,9 @@
           {{ result.used_in_display }}
           {% endif %}
         </td>
-        <td>{{ result.result_type }}</td>
+        <td>{{ {"newly_broken": "NEW", "already_broken": "EXISTING"}.get(result.result_type, result.result_type) }}</td>
         <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
         <td>{{ result.sentence_en }}</td>
-        <td>{{ result.match_method }}</td>
-        <td>{{ result.wk_parts_of_speech }}</td>
-        <td>{{ result.confidence }}</td>
-        <td>{{ result.review_note }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -208,17 +419,20 @@
 
   <table id="notion-copy-table" border="1" cellpadding="6"
     style="position:absolute; left:-9999px; top:-9999px; border-collapse: collapse;">
+    <colgroup>
+      <col style="width: 16%;" />
+      <col style="width: 14%;" />
+      <col style="width: 10%;" />
+      <col style="width: 32%;" />
+      <col style="width: 28%;" />
+    </colgroup>
     <thead>
       <tr>
         <th>Changed Item</th>
         <th>Used In</th>
-        <th>Result Type</th>
+        <th>Error Type</th>
         <th>Sentence (JP)</th>
         <th>Sentence (EN)</th>
-        <th>Match Method</th>
-        <th>WK Parts of Speech</th>
-        <th>Confidence</th>
-        <th>Review Note</th>
       </tr>
     </thead>
     <tbody>
@@ -232,13 +446,9 @@
           {{ result.used_in_display }}
           {% endif %}
         </td>
-        <td>{{ result.result_type }}</td>
+        <td>{{ {"newly_broken": "NEW", "already_broken": "EXISTING"}.get(result.result_type, result.result_type) }}</td>
         <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
         <td>{{ result.sentence_en }}</td>
-        <td>{{ result.match_method }}</td>
-        <td>{{ result.wk_parts_of_speech }}</td>
-        <td>{{ result.confidence }}</td>
-        <td>{{ result.review_note }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -250,16 +460,21 @@
   <p>Support content candidates: {{ support_candidate_count }}</p>
 
   {% if support_results %}
-  <table id="support-results-table" border="1" cellpadding="6">
+  <table id="support-results-table" class="support-table" border="1" cellpadding="6">
+    <colgroup>
+      <col style="width: 14%;" />
+      <col style="width: 14%;" />
+      <col style="width: 14%;" />
+      <col style="width: 48%;" />
+      <col style="width: 10%;" />
+    </colgroup>
     <thead>
       <tr>
         <th>Changed Item</th>
         <th>Used In</th>
         <th>Content Type</th>
         <th>Matched Text</th>
-        <th>Result Type</th>
-        <th>Confidence</th>
-        <th>Review Note</th>
+        <th>Error Type</th>
       </tr>
     </thead>
     <tbody>
@@ -275,9 +490,7 @@
         </td>
         <td>{{ result.content_type }}</td>
         <td>{{ result.matched_text }}</td>
-        <td>{{ result.result_type }}</td>
-        <td>{{ result.confidence }}</td>
-        <td>{{ result.review_note }}</td>
+        <td>{{ {"newly_broken": "NEW", "already_broken": "EXISTING"}.get(result.result_type, result.result_type) }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -349,6 +562,7 @@
   <form action="/logout" method="post">
     <button type="submit">Log out</button>
   </form>
+  </main>
   <script>
     async function copyResultsTableForNotion() {
       const table = document.getElementById("notion-copy-table");
