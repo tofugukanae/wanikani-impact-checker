@@ -267,11 +267,14 @@
     <button type="submit" data-processing-text="Processing...">Upload</button>
     <span class="upload-status" aria-live="polite"></span>
   </form>
+
+  {% if collocations_uploaded_filename %}
+  <p>Uploaded file: {{ collocations_uploaded_filename }}</p>
+  {% endif %}
   </section>
 
   {% if collocations_uploaded_filename %}
   <h3>Collocation analysis results</h3>
-  <p>{{ collocations_uploaded_filename }}</p>
   <p>Flagged collocations: {{ collocation_result_count }}</p>
   <p>Validation errors: {{ collocations_blocking_error_count }}</p>
 
