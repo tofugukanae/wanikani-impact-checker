@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
-  <title>WaniKani Level Change Impact Checker</title>
+  <title>Level Movement Checker</title>
   <style>
     :root {
       color: #111;
@@ -229,14 +229,15 @@
   </nav>
 
   <main>
-  <h1>WaniKani Level Change Impact Checker</h1>
+  <h1>Level Movement Checker</h1>
 
   <section class="setup-area">
   <h2>Set Up</h2>
 
   <h3>Sync WaniKani Data</h3>
-  <form action="/sync-subjects" method="post">
-    <button type="submit">Sync</button>
+  <form action="/sync-subjects" method="post" data-loading-form data-loading-message="Syncing WaniKani data. This may take a few seconds.">
+    <button type="submit" data-processing-text="Syncing...">Sync</button>
+    <span class="upload-status" aria-live="polite"></span>
   </form>
   <p>Last fetched: {{ last_subject_sync or "Never" }}</p>
 
@@ -249,7 +250,7 @@
   {% endif %}
 
   <h3>Upload Level Change Plan CSV</h3>
-  <form action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
+  <form action="/upload" method="post" enctype="multipart/form-data" data-loading-form data-loading-message="Processing CSV. This may take a few seconds.">
     <input type="file" name="file" accept=".csv" required />
     <button type="submit" data-processing-text="Processing...">Upload</button>
     <span class="upload-status" aria-live="polite"></span>
@@ -261,7 +262,7 @@
 
   <h3>Upload Collocations CSV</h3>
   <p>Active movement-plan items: {{ movement_candidate_count or 0 }}</p>
-  <form action="/upload-collocations-ui" method="post" enctype="multipart/form-data" data-upload-form>
+  <form action="/upload-collocations-ui" method="post" enctype="multipart/form-data" data-loading-form data-loading-message="Processing CSV. This may take a few seconds.">
     <input type="file" name="file" accept=".csv" required />
     <button type="submit" data-processing-text="Processing...">Upload</button>
     <span class="upload-status" aria-live="polite"></span>
@@ -547,7 +548,7 @@
   </form>
   </main>
   <script>
-    document.querySelectorAll("[data-upload-form]").forEach((form) => {
+    document.querySelectorAll("[data-loading-form]").forEach((form) => {
       form.addEventListener("submit", (event) => {
         if (form.dataset.submitted === "true") {
           event.preventDefault();
@@ -565,7 +566,7 @@
         }
 
         if (status) {
-          status.textContent = "Processing CSV. This may take a few seconds.";
+          status.textContent = form.dataset.loadingMessage || "Processing. This may take a few seconds.";
         }
       });
     });
