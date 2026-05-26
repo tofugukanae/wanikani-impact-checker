@@ -43,6 +43,10 @@
       border-bottom: 4px solid #111;
     }
 
+    .checker-section[hidden] {
+      display: none;
+    }
+
     main {
       max-width: 1480px;
       margin: 0 auto;
@@ -219,16 +223,59 @@
     .support-table td:nth-child(4) {
       line-height: 1.5;
     }
+
+    .sentence-checker-area {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .sentence-checker-area form {
+      max-width: 760px;
+      margin: 0 auto 34px;
+      text-align: center;
+    }
+
+    .sentence-checker-area textarea[name="input_text"] {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 180px;
+      padding: 16px;
+      border: 1px solid #b8b8b8;
+      border-radius: 4px;
+      font: inherit;
+      line-height: 1.6;
+      resize: vertical;
+    }
+
+    .sentence-checker-area table {
+      margin-bottom: 24px;
+    }
+
+    .sentence-checker-area td {
+      text-align: left;
+    }
+
+    .not-on-wk-box {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 72px;
+      padding: 18px 22px;
+      border: 1px solid #d2d2d2;
+      background: #fff;
+      white-space: pre-line;
+    }
   </style>
 </head>
 
 <body>
   <nav class="app-tabs">
-    <a class="active" href="/dashboard">Level Movement Checker</a>
-    <a href="/content-checker">Sentence Level Checker</a>
+    <a class="{% if active_tab != 'sentence' %}active{% endif %}" href="#movement-checker-section" data-tab-target="movement-checker-section">Level Movement Checker</a>
+    <a class="{% if active_tab == 'sentence' %}active{% endif %}" href="#sentence-checker-section" data-tab-target="sentence-checker-section">Sentence Level Checker</a>
   </nav>
 
   <main>
+  <section id="movement-checker-section" class="checker-section" {% if active_tab == 'sentence' %}hidden{% endif %}>
   <h1>Level Movement Checker</h1>
 
   <section class="setup-area">
@@ -543,6 +590,46 @@
     {% endif %}
   </details>
   {% endif %}
+  </section>
+
+  <section id="sentence-checker-section" class="checker-section sentence-checker-area" {% if active_tab != 'sentence' %}hidden{% endif %}>
+  <h1>Sentence Level Checker</h1>
+
+  <form action="/content-checker/analyze" method="post">
+    <textarea name="input_text" rows="8" required>{{ input_text }}</textarea>
+    <div style="margin-top: 8px;">
+      <button type="submit">Analyze</button>
+    </div>
+  </form>
+
+  {% if result %}
+  <h2>Results</h2>
+  <div class="results-actions">
+    <button type="button" onclick="copyContentCheckerCellForNotion()">Copy for Notion Cell</button>
+    <span id="content-copy-status" class="status-text"></span>
+  </div>
+
+  <table id="content-results-table" border="1" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Detected Items</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="white-space: pre-line;">{{ result.detected_items }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  {% if result.not_on_wk_display %}
+  <h3>Not on WK</h3>
+  <div class="not-on-wk-box">{{ result.not_on_wk_display }}</div>
+  {% endif %}
+
+  <textarea id="content-notion-copy-text" style="position:absolute; left:-9999px; top:-9999px;">{{ result.detected_items }}</textarea>
+  {% endif %}
+  </section>
 
   <hr />
 
@@ -551,6 +638,33 @@
   </form>
   </main>
   <script>
+    function showCheckerSection(sectionId, updateHash) {
+      document.querySelectorAll(".checker-section").forEach((section) => {
+        section.hidden = section.id !== sectionId;
+      });
+
+      document.querySelectorAll("[data-tab-target]").forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.tabTarget === sectionId);
+      });
+
+      if (updateHash) {
+        history.replaceState(null, "", `#${sectionId}`);
+      }
+    }
+
+    document.querySelectorAll("[data-tab-target]").forEach((tab) => {
+      tab.addEventListener("click", (event) => {
+        event.preventDefault();
+        showCheckerSection(tab.dataset.tabTarget, true);
+      });
+    });
+
+    if (window.location.hash === "#sentence-checker-section") {
+      showCheckerSection("sentence-checker-section", false);
+    } else if (window.location.hash === "#movement-checker-section") {
+      showCheckerSection("movement-checker-section", false);
+    }
+
     document.querySelectorAll("[data-loading-form]").forEach((form) => {
       form.addEventListener("submit", (event) => {
         if (form.dataset.submitted === "true") {
@@ -573,6 +687,22 @@
         }
       });
     });
+
+    async function copyContentCheckerCellForNotion() {
+      const textarea = document.getElementById("content-notion-copy-text");
+      const status = document.getElementById("content-copy-status");
+
+      if (!textarea || !status) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(textarea.value);
+        status.textContent = "Copied for Notion cell";
+      } catch (err) {
+        status.textContent = "Copy failed";
+      }
+    }
 
     async function copyTableForNotion(tableId, statusId) {
       const table = document.getElementById(tableId);

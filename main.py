@@ -71,6 +71,10 @@ latest_upload_state = {
     "movement": None,
     "collocations": None,
 }
+latest_content_checker_state = {
+    "input_text": "",
+    "result": None,
+}
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
@@ -1869,7 +1873,7 @@ def is_logged_in(request: Request) -> bool:
     return request.session.get("logged_in") is True
 
 
-def build_dashboard_context(request, sync_message=None, sync_error=None):
+def build_dashboard_context(request, sync_message=None, sync_error=None, active_tab="movement"):
     # MVP-only server-side cache: this preserves the latest uploads for the
     # running process without storing large CSV payloads in the session cookie.
     global latest_movement_candidates
@@ -1900,6 +1904,9 @@ def build_dashboard_context(request, sync_message=None, sync_error=None):
         "sync_error": sync_error,
         "last_subject_sync": get_last_subject_sync_display(),
         "movement_candidate_count": 0,
+        "active_tab": active_tab,
+        "input_text": latest_content_checker_state["input_text"],
+        "result": latest_content_checker_state["result"],
     }
 
     movement_state = latest_upload_state.get("movement")
@@ -2017,12 +2024,8 @@ async def content_checker(request: Request):
         return RedirectResponse(url="/", status_code=303)
 
     return templates.TemplateResponse(
-        "content_checker.html",
-        {
-            "request": request,
-            "input_text": "",
-            "result": None,
-        },
+        "dashboard.html",
+        build_dashboard_context(request, active_tab="sentence"),
     )
 
 
@@ -2032,14 +2035,12 @@ async def analyze_content_checker(request: Request, input_text: str = Form("")):
         return RedirectResponse(url="/", status_code=303)
 
     result = analyze_new_content_text(input_text)
+    latest_content_checker_state["input_text"] = input_text
+    latest_content_checker_state["result"] = result
 
     return templates.TemplateResponse(
-        "content_checker.html",
-        {
-            "request": request,
-            "input_text": input_text,
-            "result": result,
-        },
+        "dashboard.html",
+        build_dashboard_context(request, active_tab="sentence"),
     )
 
 
