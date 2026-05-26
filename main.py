@@ -4,12 +4,13 @@ import csv
 import html
 import json
 import time
+from datetime import datetime, timezone
 from io import StringIO
 
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -42,12 +43,20 @@ class Subject(Base):
     data_json = Column(Text, nullable=False)
 
 
+class AppMetadata(Base):
+    __tablename__ = "app_metadata"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 app.add_middleware(
     SessionMiddleware,
     secret_key=getenv("SECRET_KEY", "dev-secret-key"),
+    max_age=60 * 60 * 8,
 )
 
 templates = Jinja2Templates(directory="templates")
@@ -58,6 +67,10 @@ WANIKANI_API_REVISION = getenv("WANIKANI_API_REVISION", "20170710")
 WANIKANI_SUBJECTS_URL = "https://api.wanikani.com/v2/subjects"
 latest_movement_candidates = []
 latest_movement_level_map = {}
+latest_upload_state = {
+    "movement": None,
+    "collocations": None,
+}
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
@@ -90,6 +103,88 @@ def normalize_subject_type(subject_type_raw: str) -> str:
         "radical": "radical",
     }
     return subject_type_map.get(subject_type_raw.lower(), subject_type_raw.lower())
+
+
+def get_metadata_value(key):
+    db = SessionLocal()
+
+    try:
+        metadata = db.query(AppMetadata).filter(AppMetadata.key == key).first()
+        return metadata.value if metadata else None
+    finally:
+        db.close()
+
+
+def set_metadata_value(key, value):
+    db = SessionLocal()
+
+    try:
+        metadata = db.query(AppMetadata).filter(AppMetadata.key == key).first()
+
+        if metadata:
+            metadata.value = value
+        else:
+            db.add(AppMetadata(key=key, value=value))
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def format_last_sync_timestamp(value):
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def get_last_subject_sync_display():
+    return format_last_sync_timestamp(get_metadata_value("subjects_last_fetched_at"))
+
+
+def is_hidden_subject_payload(payload):
+    return bool((payload.get("data") or {}).get("hidden_at"))
+
+
+def is_hidden_subject(subject: Subject) -> bool:
+    try:
+        payload = json.loads(subject.data_json)
+    except Exception:
+        return False
+
+    return is_hidden_subject_payload(payload)
+
+
+def visible_subjects(subjects):
+    return [subject for subject in subjects if not is_hidden_subject(subject)]
+
+
+def get_visible_subject_by_id(db, subject_id):
+    subject = db.query(Subject).filter(Subject.subject_id == subject_id).first()
+
+    if subject and not is_hidden_subject(subject):
+        return subject
+
+    return None
+
+
+def get_visible_subject_by_characters(db, characters, subject_type):
+    subjects = (
+        db.query(Subject)
+        .filter(Subject.characters == characters, Subject.subject_type == subject_type)
+        .all()
+    )
+
+    for subject in subjects:
+        if not is_hidden_subject(subject):
+            return subject
+
+    return None
 
 
 def validate_csv_text(text: str):
@@ -173,11 +268,7 @@ def validate_csv_text(text: str):
                 message = "This subject type is not supported in v1 analysis."
 
             if status == "ok" and row_type == "movement":
-                subject = (
-                    db.query(Subject)
-                    .filter(Subject.characters == characters, Subject.subject_type == subject_type)
-                    .first()
-                )
+                subject = get_visible_subject_by_characters(db, characters, subject_type)
 
                 if not subject:
                     status = "not_found"
@@ -191,11 +282,7 @@ def validate_csv_text(text: str):
                         message = f"CSV current_level is {current_level}, but WaniKani data says {db_level}."
 
             if status == "ok" and row_type == "addition":
-                subject = (
-                    db.query(Subject)
-                    .filter(Subject.characters == characters, Subject.subject_type == subject_type)
-                    .first()
-                )
+                subject = get_visible_subject_by_characters(db, characters, subject_type)
 
                 if subject:
                     resolved_subject_id = subject.subject_id
@@ -424,6 +511,28 @@ def sort_results_for_display(results):
     )
 
 
+def build_admin_url(subject_id, section=None):
+    if not subject_id:
+        return ""
+
+    url = f"https://www.wanikani.com/admin/subjects/{subject_id}"
+
+    if section:
+        url += f"/{section}"
+
+    return url
+
+
+def get_support_admin_section(field_name):
+    if field_name.startswith("meaning_"):
+        return "meaning_support"
+
+    if field_name.startswith("reading_"):
+        return "reading_support"
+
+    return None
+
+
 def extract_context_sentences(subject: Subject):
     try:
         payload = json.loads(subject.data_json)
@@ -516,6 +625,15 @@ def is_kanji_character(character):
     )
 
 
+def is_japanese_character(character):
+    codepoint = ord(character)
+    return (
+        0x3040 <= codepoint <= 0x309F
+        or 0x30A0 <= codepoint <= 0x30FF
+        or is_kanji_character(character)
+    )
+
+
 def find_all_spans(text, needle):
     spans = []
     start = 0
@@ -534,6 +652,18 @@ def find_all_spans(text, needle):
 
 def spans_overlap(first, second):
     return first[0] < second[1] and second[0] < first[1]
+
+
+def token_span_from_surface(text, surface, start):
+    index = text.find(surface, start)
+
+    if index == -1:
+        index = text.find(surface)
+
+    if index == -1:
+        return None, start
+
+    return (index, index + len(surface)), index + len(surface)
 
 
 def detect_content_vocabulary(text, vocabulary_subjects):
@@ -577,13 +707,69 @@ def detect_content_vocabulary(text, vocabulary_subjects):
     return list(detected.values()), occupied_spans
 
 
-def detect_content_kanji(text, kanji_subjects, vocabulary_spans):
+def is_content_token_candidate(token):
+    surface = token.surface()
+
+    if not surface or not any(is_japanese_character(character) for character in surface):
+        return False
+
+    part_of_speech = token.part_of_speech()
+
+    if part_of_speech and part_of_speech[0] in {"助詞", "助動詞", "補助記号", "空白", "記号"}:
+        return False
+
+    if len(surface) == 1 and all("ぁ" <= character <= "ん" for character in surface):
+        return False
+
+    return True
+
+
+def detect_not_on_wk_vocabulary(text, vocabulary_subjects, occupied_spans):
+    wk_vocabulary = {
+        subject.characters
+        for subject in vocabulary_subjects
+        if subject.characters
+    }
+    detected = {}
+    search_start = 0
+
+    for token in tokenize_japanese(text):
+        surface = token.surface()
+        span, search_start = token_span_from_surface(text, surface, search_start)
+
+        if not span:
+            continue
+
+        if not is_content_token_candidate(token):
+            continue
+
+        dictionary_form = token.dictionary_form() or surface
+
+        if surface in wk_vocabulary or dictionary_form in wk_vocabulary:
+            continue
+
+        if any(span == occupied for occupied in occupied_spans):
+            continue
+
+        display = dictionary_form if dictionary_form != "*" else surface
+
+        if not display:
+            continue
+
+        detected.setdefault(display, span)
+        occupied_spans.append(span)
+
+    return [{"characters": characters} for characters in detected.keys()], occupied_spans
+
+
+def detect_content_kanji(text, kanji_subjects, occupied_spans):
     kanji_by_character = {
         subject.characters: subject
         for subject in kanji_subjects
         if subject.characters
     }
     detected = {}
+    not_on_wk = {}
 
     for index, character in enumerate(text):
         if not is_kanji_character(character):
@@ -591,29 +777,36 @@ def detect_content_kanji(text, kanji_subjects, vocabulary_spans):
 
         character_span = (index, index + 1)
 
-        if any(spans_overlap(character_span, vocabulary_span) for vocabulary_span in vocabulary_spans):
+        if any(spans_overlap(character_span, occupied_span) for occupied_span in occupied_spans):
             continue
 
         subject = kanji_by_character.get(character)
 
         if subject:
             detected[subject.subject_id] = subject
+        else:
+            not_on_wk[character] = {"characters": character}
 
-    return list(detected.values())
+    return list(detected.values()), list(not_on_wk.values())
 
 
-def format_detected_items(input_text, vocabulary_subjects, kanji_subjects):
+def format_detected_items(input_text, vocabulary_subjects, kanji_subjects, not_on_wk_vocabulary, not_on_wk_kanji):
     vocab_items = sorted(vocabulary_subjects, key=lambda subject: (subject.level, subject.characters or ""))
     kanji_items = sorted(kanji_subjects, key=lambda subject: (subject.level, subject.characters or ""))
+    not_on_wk_vocab_items = sorted(not_on_wk_vocabulary, key=lambda item: item["characters"])
+    not_on_wk_kanji_items = sorted(not_on_wk_kanji, key=lambda item: item["characters"])
 
-    if not vocab_items and not kanji_items:
+    if not vocab_items and not kanji_items and not not_on_wk_vocab_items and not not_on_wk_kanji_items:
         detected_items_text = "No items detected"
+        not_on_wk_text = ""
 
         return {
             "input_text": input_text,
             "input_text_html": html.escape(input_text).replace("\n", "<br>"),
             "detected_items": detected_items_text,
             "detected_items_html": html.escape(detected_items_text).replace("\n", "<br>"),
+            "not_on_wk_display": not_on_wk_text,
+            "not_on_wk_html": "",
             "vocabulary_items": vocab_items,
             "kanji_items": kanji_items,
         }
@@ -632,15 +825,27 @@ def format_detected_items(input_text, vocabulary_subjects, kanji_subjects):
         for subject in kanji_items:
             lines.append(f"{subject.characters} ({subject.level})")
 
+    not_on_wk_lines = []
+
+    for item in not_on_wk_vocab_items:
+        not_on_wk_lines.append(item["characters"])
+    for item in not_on_wk_kanji_items:
+        not_on_wk_lines.append(item["characters"])
+
     detected_items_text = "\n".join(lines)
+    not_on_wk_text = "\n".join(not_on_wk_lines)
 
     return {
         "input_text": input_text,
         "input_text_html": html.escape(input_text).replace("\n", "<br>"),
         "detected_items": detected_items_text,
         "detected_items_html": html.escape(detected_items_text).replace("\n", "<br>"),
+        "not_on_wk_display": not_on_wk_text,
+        "not_on_wk_html": html.escape(not_on_wk_text).replace("\n", "<br>"),
         "vocabulary_items": vocab_items,
         "kanji_items": kanji_items,
+        "not_on_wk_vocabulary": not_on_wk_vocab_items,
+        "not_on_wk_kanji": not_on_wk_kanji_items,
     }
 
 
@@ -653,13 +858,22 @@ def analyze_new_content_text(text):
     db = SessionLocal()
 
     try:
-        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
-        kanji_subjects = db.query(Subject).filter(Subject.subject_type == "kanji").all()
+        vocabulary_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        )
+        kanji_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "kanji").all()
+        )
         detected_vocabulary, vocabulary_spans = detect_content_vocabulary(
             stripped_text,
             vocabulary_subjects,
         )
-        detected_kanji = detect_content_kanji(
+        not_on_wk_vocabulary, _not_on_wk_spans = detect_not_on_wk_vocabulary(
+            stripped_text,
+            vocabulary_subjects,
+            list(vocabulary_spans),
+        )
+        detected_kanji, not_on_wk_kanji = detect_content_kanji(
             stripped_text,
             kanji_subjects,
             vocabulary_spans,
@@ -669,6 +883,8 @@ def analyze_new_content_text(text):
             stripped_text,
             detected_vocabulary,
             detected_kanji,
+            not_on_wk_vocabulary,
+            not_on_wk_kanji,
         )
     finally:
         db.close()
@@ -913,7 +1129,9 @@ def run_basic_analysis(candidates, movement_level_map):
     vocabulary_match_keys = set()
 
     try:
-        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        vocabulary_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        )
 
         for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate.get("resolved_subject_id")
@@ -923,11 +1141,7 @@ def run_basic_analysis(candidates, movement_level_map):
 
             changed_subject = None
             if changed_subject_id:
-                changed_subject = (
-                    db.query(Subject)
-                    .filter(Subject.subject_id == changed_subject_id)
-                    .first()
-                )
+                changed_subject = get_visible_subject_by_id(db, changed_subject_id)
             wk_parts_of_speech = extract_parts_of_speech(changed_subject) if changed_subject else []
 
             for subject in vocabulary_subjects:
@@ -1023,6 +1237,7 @@ def run_basic_analysis(candidates, movement_level_map):
                             "confidence": confidence,
                             "review_note": review_note,
                             "used_in_display": f"{subject.characters} ({used_in_level}) {sentence.get('sentence_label', '')}",
+                            "admin_url": build_admin_url(subject.subject_id, "sentences"),
                         }
                     )
 
@@ -1041,7 +1256,9 @@ def run_support_content_analysis(candidates, movement_level_map):
     )
 
     try:
-        subjects = db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
+        subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type.in_(["vocabulary", "kanji"])).all()
+        )
 
         for candidate in sort_candidates_by_match_priority(candidates):
             changed_subject_id = candidate.get("resolved_subject_id")
@@ -1105,6 +1322,10 @@ def run_support_content_analysis(candidates, movement_level_map):
                             "result_type": result_type,
                             "confidence": get_support_confidence(changed_subject_type),
                             "review_note": review_note,
+                            "admin_url": build_admin_url(
+                                subject.subject_id,
+                                get_support_admin_section(content["field_name"]),
+                            ),
                         }
                     )
 
@@ -1141,6 +1362,7 @@ def build_analysis_results_csv(results):
         "wk_parts_of_speech",
         "confidence",
         "review_note",
+        "admin_url",
     ])
 
     for result in results:
@@ -1158,6 +1380,7 @@ def build_analysis_results_csv(results):
         result.get("wk_parts_of_speech", ""),
         result.get("confidence", ""),
         result.get("review_note", ""),
+        result.get("admin_url", ""),
     ])
 
     return output.getvalue()
@@ -1180,6 +1403,7 @@ def build_analysis_results_tsv(results):
         "wk_parts_of_speech",
         "confidence",
         "review_note",
+        "admin_url",
     ])
 
     for result in results:
@@ -1197,9 +1421,56 @@ def build_analysis_results_tsv(results):
             result.get("wk_parts_of_speech", ""),
             result.get("confidence", ""),
             result.get("review_note", ""),
+            result.get("admin_url", ""),
         ])
 
     return output.getvalue()
+
+
+def build_support_results_csv(results):
+    output = StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "changed_item",
+        "old_level",
+        "new_level",
+        "used_in_item",
+        "used_in_level",
+        "used_in_final_level",
+        "content_type",
+        "matched_text",
+        "result_type",
+        "confidence",
+        "review_note",
+        "admin_url",
+    ])
+
+    for result in results:
+        writer.writerow([
+            result.get("changed_characters", ""),
+            result.get("old_level", ""),
+            result.get("new_level", ""),
+            result.get("used_in_characters", ""),
+            result.get("used_in_level", ""),
+            result.get("used_in_final_level", ""),
+            result.get("content_type", ""),
+            result.get("matched_text", ""),
+            result.get("result_type", ""),
+            result.get("confidence", ""),
+            result.get("review_note", ""),
+            result.get("admin_url", ""),
+        ])
+
+    return output.getvalue()
+
+
+def csv_download_response(csv_text, filename):
+    return Response(
+        content=csv_text.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def pick_row_value(row, *fieldnames):
@@ -1220,7 +1491,7 @@ def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_
         except ValueError:
             return None, None, "invalid_subject_id", "subject_id must be an integer."
 
-        subject = db.query(Subject).filter(Subject.subject_id == subject_id).first()
+        subject = get_visible_subject_by_id(db, subject_id)
 
         if not subject:
             return subject_id, None, "not_found", "No matching subject was found in the local WaniKani data."
@@ -1230,10 +1501,10 @@ def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_
     if not used_in_item:
         return None, None, "missing_field", "Either subject_id or used_in_item is required."
 
-    query = db.query(Subject).filter(
+    subjects = db.query(Subject).filter(
         Subject.characters == used_in_item,
         Subject.subject_type == "vocabulary",
-    )
+    ).all()
 
     if used_in_level_raw:
         try:
@@ -1241,9 +1512,9 @@ def resolve_collocation_subject(db, subject_id_raw, used_in_item, used_in_level_
         except ValueError:
             return None, None, "invalid_level", "used_in_level must be an integer."
 
-        query = query.filter(Subject.level == used_in_level)
+        subjects = [subject for subject in subjects if subject.level == used_in_level]
 
-    subject = query.first()
+    subject = next((subject for subject in subjects if not is_hidden_subject(subject)), None)
 
     if not subject:
         return None, None, "not_found", "No matching used_in_item was found in the local WaniKani data."
@@ -1255,11 +1526,7 @@ def resolve_changed_subject(db, changed_item):
     if not changed_item:
         return None
 
-    return (
-        db.query(Subject)
-        .filter(Subject.characters == changed_item, Subject.subject_type == "vocabulary")
-        .first()
-    )
+    return get_visible_subject_by_characters(db, changed_item, "vocabulary")
 
 
 def parse_level(raw_value):
@@ -1397,7 +1664,9 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
     vocabulary_match_keys = set()
 
     try:
-        vocabulary_subjects = db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        vocabulary_subjects = visible_subjects(
+            db.query(Subject).filter(Subject.subject_type == "vocabulary").all()
+        )
         prioritized_candidates = sort_candidates_by_match_priority(movement_candidates)
 
         for row in validated_rows:
@@ -1418,11 +1687,7 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
                 changed_subject_id = candidate.get("resolved_subject_id")
 
                 if changed_subject_id:
-                    candidate_subject = (
-                        db.query(Subject)
-                        .filter(Subject.subject_id == changed_subject_id)
-                        .first()
-                    )
+                    candidate_subject = get_visible_subject_by_id(db, changed_subject_id)
 
                 if changed_subject_id and changed_subject_id == used_in_subject_id:
                     continue
@@ -1517,6 +1782,7 @@ def run_collocation_analysis(validated_rows, movement_candidates, movement_level
                         "confidence": confidence,
                         "review_note": review_note,
                         "used_in_display": f"{row['subject_characters']} ({used_in_level}) {row['pattern_of_use']}",
+                        "admin_url": build_admin_url(used_in_subject_id, "collocations"),
                         "collocation_id": row["collocation_id"],
                         "pattern_of_use": row["pattern_of_use"],
                     }
@@ -1564,6 +1830,11 @@ def save_subjects_to_db(subjects):
         for item in subjects:
             existing = db.query(Subject).filter(Subject.subject_id == item["id"]).first()
 
+            if is_hidden_subject_payload(item):
+                if existing:
+                    db.delete(existing)
+                continue
+
             characters = item.get("data", {}).get("characters")
             level = item.get("data", {}).get("level")
             object_name = item.get("object")
@@ -1596,6 +1867,107 @@ def save_subjects_to_db(subjects):
 
 def is_logged_in(request: Request) -> bool:
     return request.session.get("logged_in") is True
+
+
+def build_dashboard_context(request, sync_message=None, sync_error=None):
+    # MVP-only server-side cache: this preserves the latest uploads for the
+    # running process without storing large CSV payloads in the session cookie.
+    global latest_movement_candidates
+    global latest_movement_level_map
+
+    context = {
+        "request": request,
+        "uploaded_filename": None,
+        "preview_lines": [],
+        "headers": [],
+        "missing_headers": [],
+        "validated_rows": [],
+        "blocking_error_count": 0,
+        "analysis_candidate_count": 0,
+        "analysis_results": [],
+        "analysis_results_tsv": "",
+        "support_candidate_count": 0,
+        "support_results": [],
+        "collocations_uploaded_filename": None,
+        "collocations_headers": [],
+        "collocations_missing_headers": [],
+        "collocations_validated_rows": [],
+        "collocations_blocking_error_count": 0,
+        "collocation_error": None,
+        "collocation_results": [],
+        "collocation_result_count": 0,
+        "sync_message": sync_message,
+        "sync_error": sync_error,
+        "last_subject_sync": get_last_subject_sync_display(),
+        "movement_candidate_count": 0,
+    }
+
+    movement_state = latest_upload_state.get("movement")
+    movement_level_map = {}
+    movement_collocation_candidates = []
+
+    if movement_state:
+        validation = movement_state["validation"]
+        analysis_candidates = get_context_candidates(validation["rows"])
+        movement_collocation_candidates = get_collocation_candidates(validation["rows"])
+        support_candidates = get_support_candidates(validation["rows"])
+        movement_candidates = get_support_candidates(validation["rows"])
+        movement_level_map = build_movement_level_map(movement_candidates)
+        analysis_results = sort_results_for_display(
+            run_basic_analysis(analysis_candidates, movement_level_map)
+        )
+        support_results = sort_results_for_display(
+            run_support_content_analysis(support_candidates, movement_level_map)
+        )
+
+        context.update({
+            "uploaded_filename": movement_state["filename"],
+            "preview_lines": movement_state["preview_lines"],
+            "headers": validation["headers"],
+            "missing_headers": validation["missing_headers"],
+            "validated_rows": validation["rows"],
+            "blocking_error_count": validation["blocking_error_count"],
+            "analysis_candidate_count": len(analysis_candidates),
+            "analysis_results": analysis_results,
+            "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
+            "support_candidate_count": len(support_candidates),
+            "support_results": support_results,
+            "movement_candidate_count": len(movement_collocation_candidates),
+        })
+
+    latest_movement_candidates = movement_collocation_candidates
+    latest_movement_level_map = movement_level_map
+
+    collocation_state = latest_upload_state.get("collocations")
+
+    if collocation_state:
+        validation = collocation_state["validation"]
+        collocation_error = None
+        collocation_results = []
+
+        if not movement_collocation_candidates:
+            collocation_error = "Upload a level change CSV first, then upload the collocations CSV."
+        else:
+            collocation_results = sort_results_for_display(
+                run_collocation_analysis(
+                    validation["rows"],
+                    movement_collocation_candidates,
+                    movement_level_map,
+                )
+            )
+
+        context.update({
+            "collocations_uploaded_filename": collocation_state["filename"],
+            "collocations_headers": validation["headers"],
+            "collocations_missing_headers": validation["missing_headers"],
+            "collocations_validated_rows": validation["rows"],
+            "collocations_blocking_error_count": validation["blocking_error_count"],
+            "collocation_error": collocation_error,
+            "collocation_results": collocation_results,
+            "collocation_result_count": len(collocation_results),
+        })
+
+    return context
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1635,23 +2007,7 @@ async def dashboard(request: Request):
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "uploaded_filename": None,
-            "preview_lines": [],
-            "headers": [],
-            "missing_headers": [],
-            "validated_rows": [],
-            "blocking_error_count": 0,
-            "analysis_candidate_count": 0,
-            "analysis_results": [],
-            "analysis_results_tsv": "",
-            "support_candidate_count": 0,
-            "support_results": [],
-            "sync_message": None,
-            "sync_error": None,
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        build_dashboard_context(request),
     )
 
 
@@ -1696,42 +2052,19 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
     content = await file.read()
     text = content.decode("utf-8-sig", errors="replace")
     validation = validate_collocations_csv_text(text)
-    collocation_error = None
-    collocation_results = []
-
-    if not latest_movement_candidates:
-        collocation_error = "Upload a level change CSV first, then upload the collocations CSV."
-    else:
-        collocation_results = sort_results_for_display(
-            run_collocation_analysis(
-                validation["rows"],
-                latest_movement_candidates,
-                latest_movement_level_map,
-            )
-        )
+    latest_upload_state["collocations"] = {
+        "filename": file.filename,
+        "validation": validation,
+    }
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "collocations_uploaded_filename": file.filename,
-            "collocations_headers": validation["headers"],
-            "collocations_missing_headers": validation["missing_headers"],
-            "collocations_validated_rows": validation["rows"],
-            "collocations_blocking_error_count": validation["blocking_error_count"],
-            "collocation_error": collocation_error,
-            "collocation_results": collocation_results,
-            "collocation_result_count": len(collocation_results),
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        build_dashboard_context(request),
     )
 
 
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_csv(request: Request, file: UploadFile = File(...)):
-    global latest_movement_candidates
-    global latest_movement_level_map
-
     if not is_logged_in(request):
         return RedirectResponse(url="/", status_code=303)
 
@@ -1739,48 +2072,25 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     text = raw_bytes.decode("utf-8", errors="replace")
 
     validation = validate_csv_text(text)
-    analysis_candidates = get_context_candidates(validation["rows"])
-    collocation_candidates = get_collocation_candidates(validation["rows"])
-    support_candidates = get_support_candidates(validation["rows"])
-    movement_candidates = get_support_candidates(validation["rows"])
-    movement_level_map = build_movement_level_map(movement_candidates)
-    latest_movement_candidates = collocation_candidates
-    latest_movement_level_map = movement_level_map
-    analysis_results = sort_results_for_display(
-        run_basic_analysis(analysis_candidates, movement_level_map)
-    )
-    support_results = sort_results_for_display(
-        run_support_content_analysis(support_candidates, movement_level_map)
-    )
+    latest_upload_state["movement"] = {
+        "filename": file.filename,
+        "preview_lines": text.splitlines()[:5],
+        "validation": validation,
+    }
+    context = build_dashboard_context(request)
 
     safe_name = file.filename.rsplit(".", 1)[0]
     export_filename = f"{safe_name}-analysis-results.csv"
     export_path = EXPORT_DIR / export_filename
 
-    csv_text = build_analysis_results_csv(analysis_results)
+    csv_text = build_analysis_results_csv(context["analysis_results"])
     export_path.write_text(csv_text, encoding="utf-8-sig")
 
     request.session["latest_export_filename"] = export_filename
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "uploaded_filename": file.filename,
-            "preview_lines": text.splitlines()[:5],
-            "headers": validation["headers"],
-            "missing_headers": validation["missing_headers"],
-            "validated_rows": validation["rows"],
-            "blocking_error_count": validation["blocking_error_count"],
-            "analysis_candidate_count": len(analysis_candidates),
-            "analysis_results": analysis_results,
-            "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
-            "support_candidate_count": len(support_candidates),
-            "support_results": support_results,
-            "sync_message": None,
-            "sync_error": None,
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        context,
     )
 
 
@@ -1792,6 +2102,10 @@ async def sync_subjects(request: Request):
     try:
         subjects = fetch_all_subjects()
         saved_count = save_subjects_to_db(subjects)
+        set_metadata_value(
+            "subjects_last_fetched_at",
+            datetime.now(timezone.utc).isoformat(),
+        )
         sync_message = (
             f"Fetched {len(subjects)} vocabulary and kanji subjects from WaniKani API "
             f"and saved {saved_count} rows to SQLite."
@@ -1803,22 +2117,11 @@ async def sync_subjects(request: Request):
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "uploaded_filename": None,
-            "preview_lines": [],
-            "headers": [],
-            "missing_headers": [],
-            "validated_rows": [],
-            "blocking_error_count": 0,
-            "analysis_candidate_count": 0,
-            "analysis_results": [],
-            "analysis_results_tsv": "",
-            "support_candidate_count": 0,
-            "support_results": [],
-            "sync_message": sync_message,
-            "sync_error": sync_error,
-        },
+        build_dashboard_context(
+            request,
+            sync_message=sync_message,
+            sync_error=sync_error,
+        ),
     )
 
 
@@ -1839,6 +2142,54 @@ async def export_results(request: Request):
         path=export_path,
         media_type="text/csv; charset=utf-8",
         filename=export_filename,
+    )
+
+
+@app.post("/export-context-sentences")
+async def export_context_sentences(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    context = build_dashboard_context(request)
+
+    if not context["analysis_results"]:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return csv_download_response(
+        build_analysis_results_csv(context["analysis_results"]),
+        "context-sentence-results.csv",
+    )
+
+
+@app.post("/export-collocations")
+async def export_collocations(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    context = build_dashboard_context(request)
+
+    if not context["collocation_results"]:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return csv_download_response(
+        build_analysis_results_csv(context["collocation_results"]),
+        "collocation-results.csv",
+    )
+
+
+@app.post("/export-support-content")
+async def export_support_content(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    context = build_dashboard_context(request)
+
+    if not context["support_results"]:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return csv_download_response(
+        build_support_results_csv(context["support_results"]),
+        "support-content-results.csv",
     )
 
 
