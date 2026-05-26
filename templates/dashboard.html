@@ -279,9 +279,12 @@
   {% endif %}
 
   {% if collocation_results %}
-  <div style="margin-bottom: 12px;">
-    <button type="button" onclick="copyTableForNotion('collocation-results-table', 'collocation-copy-status')">Copy collocation results</button>
-    <span id="collocation-copy-status" style="margin-left: 8px;"></span>
+  <div class="results-actions">
+    <form class="inline-form" action="/export-collocations" method="post">
+      <button type="submit">Export collocations CSV</button>
+    </form>
+    <button type="button" onclick="copyTableForNotion('collocation-results-table', 'collocation-copy-status')">Copy collocations</button>
+    <span id="collocation-copy-status" class="status-text"></span>
   </div>
 
   <table id="collocation-results-table" class="result-table" border="1" cellpadding="6">
@@ -382,11 +385,10 @@
 
   {% if analysis_results %}
   <div class="results-actions">
-  <form class="inline-form" action="/export-results" method="post">
-    <button type="submit">Export results CSV</button>
-  </form>
-
-    <button type="button" onclick="copyResultsTableForNotion()">Copy for Notion</button>
+    <form class="inline-form" action="/export-context-sentences" method="post">
+      <button type="submit">Export context sentences CSV</button>
+    </form>
+    <button type="button" onclick="copyTableForNotion('results-table', 'copy-status')">Copy context sentences</button>
     <span id="copy-status" class="status-text"></span>
   </div>
 
@@ -426,42 +428,6 @@
     </tbody>
   </table>
 
-  <table id="notion-copy-table" border="1" cellpadding="6"
-    style="position:absolute; left:-9999px; top:-9999px; border-collapse: collapse;">
-    <colgroup>
-      <col style="width: 16%;" />
-      <col style="width: 14%;" />
-      <col style="width: 10%;" />
-      <col style="width: 32%;" />
-      <col style="width: 28%;" />
-    </colgroup>
-    <thead>
-      <tr>
-        <th>Changed Item</th>
-        <th>Used In</th>
-        <th>Error Type</th>
-        <th>Sentence (JP)</th>
-        <th>Sentence (EN)</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for result in analysis_results %}
-      <tr>
-        <td>{{ result.changed_item_display }}</td>
-        <td>
-          {% if result.admin_url %}
-          <a href="{{ result.admin_url }}">{{ result.used_in_display }}</a>
-          {% else %}
-          {{ result.used_in_display }}
-          {% endif %}
-        </td>
-        <td>{{ {"newly_broken": "NEW", "already_broken": "EXISTING"}.get(result.result_type, result.result_type) }}</td>
-        <td>{{ result.sentence_ja_for_notion or result.sentence_ja or "" }}</td>
-        <td>{{ result.sentence_en }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
   {% endif %}
 
   <h3>Support Content Results</h3>
@@ -469,6 +435,14 @@
   <p>Support content candidates: {{ support_candidate_count }}</p>
 
   {% if support_results %}
+  <div class="results-actions">
+    <form class="inline-form" action="/export-support-content" method="post">
+      <button type="submit">Export support content CSV</button>
+    </form>
+    <button type="button" onclick="copyTableForNotion('support-results-table', 'support-copy-status')">Copy support content</button>
+    <span id="support-copy-status" class="status-text"></span>
+  </div>
+
   <table id="support-results-table" class="support-table" border="1" cellpadding="6">
     <colgroup>
       <col style="width: 14%;" />
@@ -595,37 +569,6 @@
         }
       });
     });
-
-    async function copyResultsTableForNotion() {
-      const table = document.getElementById("notion-copy-table");
-      const status = document.getElementById("copy-status");
-
-      if (!table || !status) {
-        return;
-      }
-
-      const html = table.outerHTML;
-      const text = tableToTsv(table);
-
-      try {
-        const item = new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([text], { type: "text/plain" }),
-        });
-
-        await navigator.clipboard.write([item]);
-        status.textContent = "Copied for Notion";
-        return;
-      } catch (err) {
-      }
-
-      try {
-        await navigator.clipboard.writeText(text);
-        status.textContent = "Copied as plain text";
-      } catch (fallbackErr) {
-        status.textContent = "Copy failed";
-      }
-    }
 
     async function copyTableForNotion(tableId, statusId) {
       const table = document.getElementById(tableId);

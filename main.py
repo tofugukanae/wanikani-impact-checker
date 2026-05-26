@@ -10,7 +10,7 @@ from io import StringIO
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -1427,6 +1427,52 @@ def build_analysis_results_tsv(results):
     return output.getvalue()
 
 
+def build_support_results_csv(results):
+    output = StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "changed_item",
+        "old_level",
+        "new_level",
+        "used_in_item",
+        "used_in_level",
+        "used_in_final_level",
+        "content_type",
+        "matched_text",
+        "result_type",
+        "confidence",
+        "review_note",
+        "admin_url",
+    ])
+
+    for result in results:
+        writer.writerow([
+            result.get("changed_characters", ""),
+            result.get("old_level", ""),
+            result.get("new_level", ""),
+            result.get("used_in_characters", ""),
+            result.get("used_in_level", ""),
+            result.get("used_in_final_level", ""),
+            result.get("content_type", ""),
+            result.get("matched_text", ""),
+            result.get("result_type", ""),
+            result.get("confidence", ""),
+            result.get("review_note", ""),
+            result.get("admin_url", ""),
+        ])
+
+    return output.getvalue()
+
+
+def csv_download_response(csv_text, filename):
+    return Response(
+        content=csv_text.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def pick_row_value(row, *fieldnames):
     for fieldname in fieldnames:
         value = row.get(fieldname)
@@ -2096,6 +2142,54 @@ async def export_results(request: Request):
         path=export_path,
         media_type="text/csv; charset=utf-8",
         filename=export_filename,
+    )
+
+
+@app.post("/export-context-sentences")
+async def export_context_sentences(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    context = build_dashboard_context(request)
+
+    if not context["analysis_results"]:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return csv_download_response(
+        build_analysis_results_csv(context["analysis_results"]),
+        "context-sentence-results.csv",
+    )
+
+
+@app.post("/export-collocations")
+async def export_collocations(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    context = build_dashboard_context(request)
+
+    if not context["collocation_results"]:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return csv_download_response(
+        build_analysis_results_csv(context["collocation_results"]),
+        "collocation-results.csv",
+    )
+
+
+@app.post("/export-support-content")
+async def export_support_content(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/", status_code=303)
+
+    context = build_dashboard_context(request)
+
+    if not context["support_results"]:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    return csv_download_response(
+        build_support_results_csv(context["support_results"]),
+        "support-content-results.csv",
     )
 
 
