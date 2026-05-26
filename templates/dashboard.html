@@ -197,6 +197,13 @@
       font-size: 13px;
     }
 
+    .upload-status {
+      display: inline-block;
+      margin-left: 8px;
+      color: #666;
+      font-size: 13px;
+    }
+
     .result-table td:nth-child(1),
     .result-table td:nth-child(2),
     .result-table td:nth-child(3),
@@ -242,9 +249,10 @@
   {% endif %}
 
   <h3>Upload Level Change Plan CSV</h3>
-  <form action="/upload" method="post" enctype="multipart/form-data">
+  <form action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
     <input type="file" name="file" accept=".csv" required />
-    <button type="submit">Upload</button>
+    <button type="submit" data-processing-text="Processing...">Upload</button>
+    <span class="upload-status" aria-live="polite"></span>
   </form>
 
   {% if uploaded_filename %}
@@ -253,9 +261,10 @@
 
   <h3>Upload Collocations CSV</h3>
   <p>Active movement-plan items: {{ movement_candidate_count or 0 }}</p>
-  <form action="/upload-collocations-ui" method="post" enctype="multipart/form-data">
+  <form action="/upload-collocations-ui" method="post" enctype="multipart/form-data" data-upload-form>
     <input type="file" name="file" accept=".csv" required />
-    <button type="submit">Upload</button>
+    <button type="submit" data-processing-text="Processing...">Upload</button>
+    <span class="upload-status" aria-live="polite"></span>
   </form>
   </section>
 
@@ -564,6 +573,29 @@
   </form>
   </main>
   <script>
+    document.querySelectorAll("[data-upload-form]").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        if (form.dataset.submitted === "true") {
+          event.preventDefault();
+          return;
+        }
+
+        form.dataset.submitted = "true";
+
+        const button = form.querySelector('button[type="submit"]');
+        const status = form.querySelector(".upload-status");
+
+        if (button) {
+          button.disabled = true;
+          button.textContent = button.dataset.processingText || "Processing...";
+        }
+
+        if (status) {
+          status.textContent = "Processing CSV. This may take a few seconds.";
+        }
+      });
+    });
+
     async function copyResultsTableForNotion() {
       const table = document.getElementById("notion-copy-table");
       const status = document.getElementById("copy-status");
