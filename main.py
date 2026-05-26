@@ -67,6 +67,10 @@ WANIKANI_API_REVISION = getenv("WANIKANI_API_REVISION", "20170710")
 WANIKANI_SUBJECTS_URL = "https://api.wanikani.com/v2/subjects"
 latest_movement_candidates = []
 latest_movement_level_map = {}
+latest_upload_state = {
+    "movement": None,
+    "collocations": None,
+}
 
 REQUIRED_HEADERS = ["characters", "subject_type", "current_level", "new_level"]
 ALLOWED_SUBJECT_TYPES = {"vocabulary", "kanji", "radical"}
@@ -1819,6 +1823,107 @@ def is_logged_in(request: Request) -> bool:
     return request.session.get("logged_in") is True
 
 
+def build_dashboard_context(request, sync_message=None, sync_error=None):
+    # MVP-only server-side cache: this preserves the latest uploads for the
+    # running process without storing large CSV payloads in the session cookie.
+    global latest_movement_candidates
+    global latest_movement_level_map
+
+    context = {
+        "request": request,
+        "uploaded_filename": None,
+        "preview_lines": [],
+        "headers": [],
+        "missing_headers": [],
+        "validated_rows": [],
+        "blocking_error_count": 0,
+        "analysis_candidate_count": 0,
+        "analysis_results": [],
+        "analysis_results_tsv": "",
+        "support_candidate_count": 0,
+        "support_results": [],
+        "collocations_uploaded_filename": None,
+        "collocations_headers": [],
+        "collocations_missing_headers": [],
+        "collocations_validated_rows": [],
+        "collocations_blocking_error_count": 0,
+        "collocation_error": None,
+        "collocation_results": [],
+        "collocation_result_count": 0,
+        "sync_message": sync_message,
+        "sync_error": sync_error,
+        "last_subject_sync": get_last_subject_sync_display(),
+        "movement_candidate_count": 0,
+    }
+
+    movement_state = latest_upload_state.get("movement")
+    movement_level_map = {}
+    movement_collocation_candidates = []
+
+    if movement_state:
+        validation = movement_state["validation"]
+        analysis_candidates = get_context_candidates(validation["rows"])
+        movement_collocation_candidates = get_collocation_candidates(validation["rows"])
+        support_candidates = get_support_candidates(validation["rows"])
+        movement_candidates = get_support_candidates(validation["rows"])
+        movement_level_map = build_movement_level_map(movement_candidates)
+        analysis_results = sort_results_for_display(
+            run_basic_analysis(analysis_candidates, movement_level_map)
+        )
+        support_results = sort_results_for_display(
+            run_support_content_analysis(support_candidates, movement_level_map)
+        )
+
+        context.update({
+            "uploaded_filename": movement_state["filename"],
+            "preview_lines": movement_state["preview_lines"],
+            "headers": validation["headers"],
+            "missing_headers": validation["missing_headers"],
+            "validated_rows": validation["rows"],
+            "blocking_error_count": validation["blocking_error_count"],
+            "analysis_candidate_count": len(analysis_candidates),
+            "analysis_results": analysis_results,
+            "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
+            "support_candidate_count": len(support_candidates),
+            "support_results": support_results,
+            "movement_candidate_count": len(movement_collocation_candidates),
+        })
+
+    latest_movement_candidates = movement_collocation_candidates
+    latest_movement_level_map = movement_level_map
+
+    collocation_state = latest_upload_state.get("collocations")
+
+    if collocation_state:
+        validation = collocation_state["validation"]
+        collocation_error = None
+        collocation_results = []
+
+        if not movement_collocation_candidates:
+            collocation_error = "Upload a level change CSV first, then upload the collocations CSV."
+        else:
+            collocation_results = sort_results_for_display(
+                run_collocation_analysis(
+                    validation["rows"],
+                    movement_collocation_candidates,
+                    movement_level_map,
+                )
+            )
+
+        context.update({
+            "collocations_uploaded_filename": collocation_state["filename"],
+            "collocations_headers": validation["headers"],
+            "collocations_missing_headers": validation["missing_headers"],
+            "collocations_validated_rows": validation["rows"],
+            "collocations_blocking_error_count": validation["blocking_error_count"],
+            "collocation_error": collocation_error,
+            "collocation_results": collocation_results,
+            "collocation_result_count": len(collocation_results),
+        })
+
+    return context
+
+
 @app.get("/", response_class=HTMLResponse)
 async def login_page(request: Request):
     if is_logged_in(request):
@@ -1856,24 +1961,7 @@ async def dashboard(request: Request):
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "uploaded_filename": None,
-            "preview_lines": [],
-            "headers": [],
-            "missing_headers": [],
-            "validated_rows": [],
-            "blocking_error_count": 0,
-            "analysis_candidate_count": 0,
-            "analysis_results": [],
-            "analysis_results_tsv": "",
-            "support_candidate_count": 0,
-            "support_results": [],
-            "sync_message": None,
-            "sync_error": None,
-            "last_subject_sync": get_last_subject_sync_display(),
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        build_dashboard_context(request),
     )
 
 
@@ -1918,43 +2006,19 @@ async def upload_collocations_ui(request: Request, file: UploadFile = File(...))
     content = await file.read()
     text = content.decode("utf-8-sig", errors="replace")
     validation = validate_collocations_csv_text(text)
-    collocation_error = None
-    collocation_results = []
-
-    if not latest_movement_candidates:
-        collocation_error = "Upload a level change CSV first, then upload the collocations CSV."
-    else:
-        collocation_results = sort_results_for_display(
-            run_collocation_analysis(
-                validation["rows"],
-                latest_movement_candidates,
-                latest_movement_level_map,
-            )
-        )
+    latest_upload_state["collocations"] = {
+        "filename": file.filename,
+        "validation": validation,
+    }
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "collocations_uploaded_filename": file.filename,
-            "collocations_headers": validation["headers"],
-            "collocations_missing_headers": validation["missing_headers"],
-            "collocations_validated_rows": validation["rows"],
-            "collocations_blocking_error_count": validation["blocking_error_count"],
-            "collocation_error": collocation_error,
-            "collocation_results": collocation_results,
-            "collocation_result_count": len(collocation_results),
-            "last_subject_sync": get_last_subject_sync_display(),
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        build_dashboard_context(request),
     )
 
 
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_csv(request: Request, file: UploadFile = File(...)):
-    global latest_movement_candidates
-    global latest_movement_level_map
-
     if not is_logged_in(request):
         return RedirectResponse(url="/", status_code=303)
 
@@ -1962,49 +2026,25 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     text = raw_bytes.decode("utf-8", errors="replace")
 
     validation = validate_csv_text(text)
-    analysis_candidates = get_context_candidates(validation["rows"])
-    collocation_candidates = get_collocation_candidates(validation["rows"])
-    support_candidates = get_support_candidates(validation["rows"])
-    movement_candidates = get_support_candidates(validation["rows"])
-    movement_level_map = build_movement_level_map(movement_candidates)
-    latest_movement_candidates = collocation_candidates
-    latest_movement_level_map = movement_level_map
-    analysis_results = sort_results_for_display(
-        run_basic_analysis(analysis_candidates, movement_level_map)
-    )
-    support_results = sort_results_for_display(
-        run_support_content_analysis(support_candidates, movement_level_map)
-    )
+    latest_upload_state["movement"] = {
+        "filename": file.filename,
+        "preview_lines": text.splitlines()[:5],
+        "validation": validation,
+    }
+    context = build_dashboard_context(request)
 
     safe_name = file.filename.rsplit(".", 1)[0]
     export_filename = f"{safe_name}-analysis-results.csv"
     export_path = EXPORT_DIR / export_filename
 
-    csv_text = build_analysis_results_csv(analysis_results)
+    csv_text = build_analysis_results_csv(context["analysis_results"])
     export_path.write_text(csv_text, encoding="utf-8-sig")
 
     request.session["latest_export_filename"] = export_filename
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "uploaded_filename": file.filename,
-            "preview_lines": text.splitlines()[:5],
-            "headers": validation["headers"],
-            "missing_headers": validation["missing_headers"],
-            "validated_rows": validation["rows"],
-            "blocking_error_count": validation["blocking_error_count"],
-            "analysis_candidate_count": len(analysis_candidates),
-            "analysis_results": analysis_results,
-            "analysis_results_tsv": build_analysis_results_tsv(analysis_results),
-            "support_candidate_count": len(support_candidates),
-            "support_results": support_results,
-            "sync_message": None,
-            "sync_error": None,
-            "last_subject_sync": get_last_subject_sync_display(),
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        context,
     )
 
 
@@ -2031,24 +2071,11 @@ async def sync_subjects(request: Request):
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "uploaded_filename": None,
-            "preview_lines": [],
-            "headers": [],
-            "missing_headers": [],
-            "validated_rows": [],
-            "blocking_error_count": 0,
-            "analysis_candidate_count": 0,
-            "analysis_results": [],
-            "analysis_results_tsv": "",
-            "support_candidate_count": 0,
-            "support_results": [],
-            "sync_message": sync_message,
-            "sync_error": sync_error,
-            "last_subject_sync": get_last_subject_sync_display(),
-            "movement_candidate_count": len(latest_movement_candidates),
-        },
+        build_dashboard_context(
+            request,
+            sync_message=sync_message,
+            sync_error=sync_error,
+        ),
     )
 
 
